@@ -14,6 +14,7 @@ from plotly.subplots import make_subplots
 
 import analysis as A
 import data as D
+import signals as S
 
 st.set_page_config(page_title="Indian Market Analyser", page_icon="📈", layout="wide")
 
@@ -134,7 +135,7 @@ if quick.strip() and quick != st.session_state.get("_last_quick"):
     st.session_state["_last_quick"] = quick
     st.session_state["symbol"] = quick.strip().upper()
     st.session_state["page"] = "Stock analysis"
-page = st.sidebar.radio("Go to", ["Stock analysis", "Market overview", "Screener"], key="page")
+page = st.sidebar.radio("Go to", ["Stock analysis", "Buy / Sell signals", "Market overview", "Screener"], key="page")
 st.sidebar.toggle("Demo data (offline)", key="demo",
                   help="Use generated sample prices when live data is unavailable.")
 st.sidebar.caption("Data: Yahoo Finance (may be delayed ~15 min). "
@@ -444,10 +445,219 @@ def page_screener():
         st.info(f"Selected {pick}. Choose **Stock analysis** in the sidebar.")
 
 
+# ------------------------------------------------------------ buy/sell signals
+
+def signal_params() -> "S.Params":
+    with st.expander("⚙️ Strategy settings"):
+        c = st.columns(4)
+        atr_mult = c[0].number_input("Stop-loss (× ATR)", 0.5, 5.0, 1.5, 0.25)
+        reward = c[1].number_input("Target (× risk)", 1.0, 5.0, 2.0, 0.5)
+        hold = c[2].number_input("Max holding days", 3, 60, 20, 1)
+        short = c[3].toggle("Count SELL as short trades", True,
+                            help="Off = SELL signals only mean 'exit / avoid'.")
+    return S.Params(atr_mult=atr_mult, reward=reward, max_hold=int(hold), allow_short=short)
+
+
+def signal_chart(d: pd.DataFrame, sig: pd.Series, plan: dict | None, bars: int = 250):
+    d, sig = d.tail(bars), sig.tail(bars)
+    fig = go.Figure()
+    fig.add_trace(go.Candlestick(x=d.index, open=d["Open"], high=d["High"], low=d["Low"],
+                                 close=d["Close"], name="Price",
+                                 increasing_line_color=UP, decreasing_line_color=DOWN))
+    for col, color in (("SMA50", "#2563eb"), ("SMA200", "#7c3aed")):
+        fig.add_trace(go.Scatter(x=d.index, y=d[col], name=col, line=dict(color=color, width=1.2)))
+    buys, sells = sig[sig > 0].index, sig[sig < 0].index
+    fig.add_trace(go.Scatter(x=buys, y=d.loc[buys, "Low"] * 0.985, mode="markers", name="BUY",
+                             marker=dict(symbol="triangle-up", size=12, color=UP)))
+    fig.add_trace(go.Scatter(x=sells, y=d.loc[sells, "High"] * 1.015, mode="markers", name="SELL",
+                             marker=dict(symbol="triangle-down", size=12, color=DOWN)))
+    if plan:
+        for k, label, color in (("entry", "Entry", "#0f172a"), ("stop", "Stop-loss", DOWN),
+                                ("target1", "Target 1", UP), ("target2", "Target 2", UP)):
+            fig.add_hline(y=plan[k], line=dict(color=color, width=1.2, dash="dash"),
+                          annotation_text=f"{label} {plan[k]:,.1f}", annotation_position="right")
+    fig.update_layout(height=520, xaxis_rangeslider_visible=False,
+                      margin=dict(l=10, r=100, t=10, b=10),
+                      legend=dict(orientation="h", y=1.03, x=0))
+    fig.update_xaxes(rangebreaks=[dict(bounds=["sat", "mon"])])
+    return fig
+
+
+def page_signals():
+    st.title("Buy / Sell signals")
+    st.warning("Educational tool. Signals come from fixed rules and their past results on "
+               "this stock — no tool can tell exactly where a price will go. Always use the "
+               "stop-loss. Not investment advice.", icon="⚠️")
+    c1, c2 = st.columns([2, 1])
+    symbol = c1.text_input("Stock", value=st.session_state.get("symbol", "INFY"),
+                           key="sig_symbol").strip().upper()
+    exchange = c2.selectbox("Exchange", ["NSE", "BSE"], key="sig_ex")
+    p = signal_params()
+    tab_one, tab_scan, tab_how = st.tabs(["🎯 Stock signal", "🔎 Signal scanner", "📘 Strategies"])
+
+    with tab_one:
+        if not symbol:
+            return
+        st.session_state["symbol"] = symbol
+        ticker = D.to_yahoo(symbol, exchange)
+        with st.spinner(f"Analysing {ticker}…"):
+            raw = get_history(ticker, "5y")
+        if raw.empty or len(raw) < 220:
+            st.error(f"Not enough data for **{ticker}** (needs about a year of history).")
+            return
+        ev = S.evaluate(raw, p)
+        d, plan = ev["data"], ev["plan"]
+        close = float(d["Close"].iloc[-1])
+
+        # --- the call
+        if plan:
+            color = UP if plan["side"] == "BUY" else DOWN
+            fired = [r for r in ev["results"] if r["fresh"]]
+            why = ", ".join(f"{r['strategy'].name} ({'BUY' if r['fresh'] > 0 else 'SELL'})"
+                            for r in fired)
+            st.markdown(
+                f"<div style='border-left:6px solid {color};padding:12px 16px;"
+                f"background:rgba(100,116,139,.08);border-radius:6px'>"
+                f"<div style='font-size:13px;opacity:.7'>SIGNAL · {d.index[-1]:%d %b %Y}</div>"
+                f"<div style='font-size:30px;font-weight:800;color:{color}'>{plan['side']}</div>"
+                f"<div>Triggered by: {why}</div></div>", unsafe_allow_html=True)
+            st.write("")
+            m = st.columns(5)
+            m[0].metric("Entry (around)", fmt(plan["entry"], prefix="₹"))
+            m[1].metric("Stop-loss", fmt(plan["stop"], prefix="₹"),
+                        f"{-plan['risk_pct'] if plan['side'] == 'BUY' else plan['risk_pct']:+.1f}%",
+                        delta_color="off")
+            m[2].metric("Target 1 (1R)", fmt(plan["target1"], prefix="₹"),
+                        f"{(plan['target1'] / plan['entry'] - 1) * 100:+.1f}%", delta_color="off")
+            m[3].metric(f"Target 2 ({plan['rr']:g}R)", fmt(plan["target2"], prefix="₹"),
+                        f"{(plan['target2'] / plan['entry'] - 1) * 100:+.1f}%", delta_color="off")
+            m[4].metric("Risk : Reward", f"1 : {plan['rr']:g}")
+            if plan["side"] == "SELL":
+                st.caption("SELL = exit if you hold it, or a short trade (intraday or via "
+                           "futures/options) for experienced traders. Cash-market shorts "
+                           "must be squared off the same day.")
+
+            with st.expander("💰 Position size calculator", expanded=True):
+                a, b = st.columns(2)
+                capital = a.number_input("Your capital (₹)", 1000, 100_000_000, 100_000, 5000)
+                risk_pct = b.slider("Max loss per trade (% of capital)", 0.25, 5.0, 1.0, 0.25)
+                ps = S.position_size(capital, risk_pct, plan["entry"], plan["stop"])
+                st.markdown(f"Buy/sell **{ps['qty']} shares** (≈ ₹{ps['value']:,.0f}). "
+                            f"If the stop-loss is hit you lose about **₹{ps['max_loss']:,.0f}** "
+                            f"({risk_pct:g}% of capital).")
+        else:
+            st.markdown(
+                "<div style='border-left:6px solid #64748b;padding:12px 16px;"
+                "background:rgba(100,116,139,.08);border-radius:6px'>"
+                "<div style='font-size:13px;opacity:.7'>SIGNAL</div>"
+                "<div style='font-size:30px;font-weight:800;color:#64748b'>NO TRADE</div>"
+                "<div>None of the strategies has a fresh signal in the last 3 sessions. "
+                "Waiting is also a position.</div></div>", unsafe_allow_html=True)
+
+        # --- zones: always tell where buying/selling makes sense
+        st.markdown("#### Where to buy and where to sell")
+        sw = A.swing_levels(d)
+        last = d.iloc[-1]
+        piv = A.pivot_levels(float(last["High"]), float(last["Low"]), close)
+        buy_zone = sw["support"][0][0] if sw["support"] else piv["S1"]
+        sell_zone = sw["resistance"][0][0] if sw["resistance"] else piv["R1"]
+        z1, z2 = st.columns(2)
+        z1.success(f"**Buy zone: ₹{buy_zone * 0.995:,.0f} – ₹{buy_zone * 1.005:,.0f}**\n\n"
+                   f"Nearest support ({(buy_zone / close - 1) * 100:+.1f}% from ₹{close:,.0f}). "
+                   f"Buyers have stepped in here before. A close well below it weakens the case.")
+        z2.error(f"**Sell / book-profit zone: ₹{sell_zone * 0.995:,.0f} – ₹{sell_zone * 1.005:,.0f}**\n\n"
+                 f"Nearest resistance ({(sell_zone / close - 1) * 100:+.1f}%). Sellers have "
+                 f"appeared here before. A close well above it is bullish.")
+        trend_up = last["Close"] > last["SMA200"] if pd.notna(last["SMA200"]) else None
+        if trend_up is not None:
+            st.caption("Long-term trend is **up** (above 200-DMA): buying near support is the "
+                       "higher-probability side." if trend_up else
+                       "Long-term trend is **down** (below 200-DMA): rallies to resistance tend "
+                       "to fail; buying near support is riskier — keep positions small.")
+
+        # --- chart + per-strategy history
+        st.markdown("#### Signals on the chart")
+        best = max(ev["results"], key=lambda r: (r["fresh"] != 0, r["stats"]["Profit factor"] or 0))
+        names = {r["strategy"].name: r for r in ev["results"]}
+        pick = st.selectbox("Show markers for", list(names),
+                            index=list(names).index(best["strategy"].name))
+        st.plotly_chart(signal_chart(d, names[pick]["signal"], plan), width="stretch")
+
+        st.markdown("#### How each strategy has done on this stock (last 5 years)")
+        rows = []
+        for r in ev["results"]:
+            s = r["stats"]
+            rows.append({"Strategy": r["strategy"].name,
+                         "Now": {1: "BUY", -1: "SELL", 0: "—"}[r["fresh"]],
+                         "Trades": s["Trades"], "Win rate %": s["Win rate %"],
+                         "Avg return %": s["Avg return %"], "Total return %": s["Total return %"],
+                         "Profit factor": s["Profit factor"], "Max drawdown %": s["Max drawdown %"],
+                         "Avg days": s["Avg days"]})
+        tbl = pd.DataFrame(rows).set_index("Strategy")
+        st.dataframe(tbl.style.format(precision=1, na_rep="—"), width="stretch")
+        bh = (close / float(d["Close"].iloc[0]) - 1) * 100
+        st.caption(f"Buy-and-hold over the same period: {bh:+.1f}%. Profit factor above 1 means "
+                   "winners outweighed losers; below 1 means the strategy lost money here. "
+                   "Past results do not guarantee future results; costs and taxes not included.")
+        with st.expander("All past trades for the selected strategy"):
+            t = names[pick]["trades"]
+            if t.empty:
+                st.write("No trades.")
+            else:
+                st.dataframe(t.sort_values("Signal date", ascending=False)
+                             .style.format(precision=2), width="stretch", hide_index=True)
+
+    with tab_scan:
+        universe = st.selectbox("Scan", list(D.UNIVERSES), key="scan_u")
+        if st.button(f"Scan {len(D.UNIVERSES[universe])} stocks for fresh signals", type="primary"):
+            syms = D.UNIVERSES[universe]
+            frames = get_many([D.to_yahoo(s) for s in syms], period="5y")
+            rows, bar = [], st.progress(0.0)
+            for i, sym in enumerate(syms):
+                bar.progress((i + 1) / len(syms))
+                df = frames.get(D.to_yahoo(sym), pd.DataFrame())
+                if df.empty or len(df) < 220:
+                    continue
+                try:
+                    ev = S.evaluate(df, p)
+                except Exception:
+                    continue
+                if not ev["plan"]:
+                    continue
+                pl = ev["plan"]
+                fired = [r for r in ev["results"] if r["fresh"]]
+                pfs = [r["stats"]["Profit factor"] for r in fired if r["stats"]["Profit factor"]]
+                rows.append({"Symbol": sym, "Signal": pl["side"], "Entry": pl["entry"],
+                             "Stop-loss": pl["stop"], "Target 1": pl["target1"],
+                             "Target 2": pl["target2"], "Risk %": pl["risk_pct"],
+                             "Strategies": ", ".join(r["strategy"].name for r in fired),
+                             "Past profit factor": sum(pfs) / len(pfs) if pfs else None})
+            bar.empty()
+            if not rows:
+                st.info("No fresh signals in this group right now.")
+            else:
+                out = pd.DataFrame(rows).set_index("Symbol").sort_values(
+                    "Past profit factor", ascending=False, na_position="last")
+                st.dataframe(out.style.format(precision=2, na_rep="—").map(
+                    lambda v: f"color:{UP if v == 'BUY' else DOWN};font-weight:700"
+                    if v in ("BUY", "SELL") else "", subset=["Signal"]), width="stretch")
+                st.download_button("Download CSV", out.to_csv().encode(), "signals.csv", "text/csv")
+
+    with tab_how:
+        st.markdown("Each strategy is a plugin in `signals.py`. A signal appears at the close "
+                    "of a day and is acted on at the next day's open. Stop-loss = "
+                    f"{p.atr_mult:g} × ATR (adjusted to nearby swing levels), Target 1 = 1× risk, "
+                    f"Target 2 = {p.reward:g}× risk. When several strategies fire, each counts "
+                    "in proportion to how well it has worked on that stock before.")
+        for stg in S.STRATEGIES.values():
+            st.markdown(f"**{stg.name}** — {stg.description}")
+
+
 # ------------------------------------------------------------------------ main
 
 {"Market overview": page_overview,
  "Stock analysis": page_stock,
+ "Buy / Sell signals": page_signals,
  "Screener": page_screener}[page]()
 
 st.divider()

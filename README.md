@@ -6,6 +6,7 @@ A free dashboard for analysing NSE/BSE stocks, built with Python + Streamlit.
 
 | Page | What it does |
 |---|---|
+| **Buy / Sell signals** | BUY / SELL / NO TRADE call with entry, stop-loss, targets and risk:reward · buy zone & sell zone · position-size calculator · chart markers · 5-year backtest of every strategy on that stock · scanner for fresh signals |
 | **Market overview** | NIFTY 50, Bank Nifty, Sensex, Nifty IT, India VIX · top gainers/losers · advance/decline · signal breakdown |
 | **Stock analysis** (opens first) | Type any NSE/BSE stock — in the sidebar search or on the page |
 | ↳ Full analysis | Written report: verdict, performance (1W–1Y), trend, momentum, levels, fundamentals, overall view, what to watch · downloadable |
@@ -48,8 +49,21 @@ Stock lists for the screener are in `data.py` (`UNIVERSES`) — edit them when i
 app.py          Streamlit pages and charts
 analysis.py     Pivots, swing levels, SMA/EMA, RSI, MACD, Bollinger, ATR, signal score
 data.py         Yahoo Finance data, stock lists, fundamentals
+signals.py      Strategy plugins (pullback, breakout, MACD, MA cross, Bollinger), trade plans, backtester
 tests/          Unit tests for analysis.py  (python -m pytest)
 ```
+
+## Adding your own strategy
+
+In `signals.py`, write a function that returns +1 (buy), -1 (sell) or 0 per day and decorate it:
+
+```python
+@strategy("rsi30", "RSI 30 bounce", "Buy when RSI crosses up through 30.")
+def rsi30(d):
+    return _combine(_cross_up(d["RSI"], 30), _cross_down(d["RSI"], 70))
+```
+
+It appears automatically in the signal page, scanner and backtest.
 
 ## Ideas for next versions
 
