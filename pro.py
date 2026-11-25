@@ -178,7 +178,8 @@ def simulate(d: pd.DataFrame, p: ProParams = ProParams(), symbol: str = "") -> p
         net = gross - p.cost_pct
         trades.append({
             "Symbol": symbol, "Setup": names[i], "Score": float(sc.iloc[i]),
-            "Signal date": idx[i], "Entry": entry, "Stop": stop, "Target": target,
+            "Signal date": idx[i], "Entry date": idx[i + 1],
+            "Entry": entry, "Stop": stop, "Target": target,
             "Exit date": idx[j_exit], "Exit": exit_px, "Outcome": outcome,
             "Gross %": gross, "Net %": net,
             "R": (exit_px - entry) / risk - p.cost_pct / 100 * entry / risk,
@@ -292,6 +293,121 @@ def evaluate(df: pd.DataFrame, nifty: pd.DataFrame, p: ProParams = ProParams(),
             "confidence": confidence(stats_json, fired.iloc[-1], s_sig),
         }
     return res
+
+
+# ------------------------------------------------------------ journal
+
+def track_trade(df: pd.DataFrame, signal_date, stop: float, target: float,
+                p: ProParams = ProParams()) -> dict:
+    """Follow one live signal with the same rules as the backtest.
+    Entry = next open after the signal; stop/target from the signal's plan
+    (shifted by the entry gap so risk stays the same)."""
+    sd = pd.Timestamp(signal_date)
+    after = df[df.index > sd]
+    if after.empty:
+        return {"Status": "Waiting"}
+    entry = float(after["Open"].iloc[0])
+    plan_entry = float(df.loc[df.index <= sd, "Close"].iloc[-1])
+    gap = entry - plan_entry
+    stop, target = stop + gap, target + gap
+    risk = entry - stop
+    cur_stop, status, exit_px, exit_day = stop, "Open", None, None
+    for k, (day, row) in enumerate(after.iterrows()):
+        if k >= p.max_hold:
+            status, exit_px, exit_day = "Time", float(after["Close"].iloc[k - 1]), after.index[k - 1]
+            break
+        if row["Low"] <= cur_stop:
+            exit_px = min(float(row["Open"]), cur_stop)
+            status = "Breakeven" if cur_stop >= entry else "Stop"
+            exit_day = day
+            break
+        if row["High"] >= target:
+            status, exit_px, exit_day = "Target", max(float(row["Open"]), target), day
+            break
+        if p.trail_after_r and row["High"] >= entry + p.trail_after_r * risk:
+            cur_stop = max(cur_stop, entry)
+    last_px = float(after["Close"].iloc[-1])
+    px = exit_px if exit_px is not None else last_px
+    net = (px / entry - 1) * 100 - (p.cost_pct if exit_px is not None else 0)
+    return {"Status": status, "Entry date": after.index[0], "Entry price": entry,
+            "Stop (live)": cur_stop, "Target (live)": target,
+            "Exit date": exit_day, "Exit price": exit_px, "Last price": last_px,
+            "Net %": net, "R": (px - entry) / risk if risk > 0 else None,
+            "Days": min(len(after), p.max_hold)}
+
+
+def journal_summary(j: pd.DataFrame) -> dict:
+    if j is None or j.empty:
+        return {"signals": 0, "closed": 0, "open": 0}
+    closed = j[~j["Status"].isin(["Open", "Waiting"])]
+    out = {"signals": int(len(j)), "closed": int(len(closed)),
+           "open": int(j["Status"].isin(["Open", "Waiting"]).sum())}
+    if len(closed):
+        win = closed["Net %"] > 0
+        gl = -closed.loc[~win, "Net %"].sum()
+        out.update({"win_rate": float(win.mean() * 100),
+                    "avg_net_pct": float(closed["Net %"].mean()),
+                    "profit_factor": float(closed.loc[win, "Net %"].sum() / gl) if gl > 0 else None})
+    return out
+
+
+# ---------------------------------------------------------- portfolio
+
+def portfolio(trades: pd.DataFrame, capital: float = 100_000, max_positions: int = 5,
+              risk_pct: float = 1.0) -> dict:
+    """Replay trades as a real account: at most `max_positions` open at once,
+    each sized so hitting the stop loses `risk_pct`% of current equity, and
+    never more than equity / max_positions in one stock. Trades are taken in
+    signal order; extras are skipped when the account is full.
+    Equity is marked on exits (closed trades), so drawdowns between exits
+    are understated."""
+    if trades.empty:
+        return {"trades_taken": 0}
+    t = trades[trades["Outcome"] != "Open"].sort_values(["Entry date", "Score"],
+                                                        ascending=[True, False])
+    equity, open_pos, curve, taken, skipped = capital, [], [], 0, 0
+    for _, tr in t.iterrows():
+        # close everything that exited before this entry
+        still = []
+        for pos in open_pos:
+            if pos["exit"] <= tr["Entry date"]:
+                equity += pos["pnl"]
+                curve.append((pos["exit"], equity))
+            else:
+                still.append(pos)
+        open_pos = still
+        if len(open_pos) >= max_positions:
+            skipped += 1
+            continue
+        risk_per_share = tr["Entry"] - tr["Stop"]
+        if risk_per_share <= 0:
+            continue
+        qty = min(equity * risk_pct / 100 / risk_per_share,
+                  equity / max_positions / tr["Entry"])
+        pnl = qty * tr["Entry"] * tr["Net %"] / 100
+        open_pos.append({"exit": tr["Exit date"], "pnl": pnl})
+        taken += 1
+    for pos in sorted(open_pos, key=lambda x: x["exit"]):
+        equity += pos["pnl"]
+        curve.append((pos["exit"], equity))
+    if not curve:
+        return {"trades_taken": 0}
+    c = pd.Series([v for _, v in curve], index=pd.to_datetime([d for d, _ in curve])).sort_index()
+    start = pd.Timestamp(t["Entry date"].min())
+    years = max((c.index[-1] - start).days / 365.25, 0.1)
+    dd = (c / c.cummax().clip(lower=capital) - 1).min() * 100
+    yearly = c.groupby(c.index.year).last()
+    prev = pd.Series([capital] + yearly.tolist()[:-1], index=yearly.index)
+    return {
+        "start_capital": capital, "end_capital": float(c.iloc[-1]),
+        "total_return_pct": float((c.iloc[-1] / capital - 1) * 100),
+        "cagr_pct": float(((c.iloc[-1] / capital) ** (1 / years) - 1) * 100),
+        "max_drawdown_pct": float(min(dd, 0)),
+        "trades_taken": taken, "trades_skipped_full": skipped,
+        "max_positions": max_positions, "risk_pct": risk_pct,
+        "yearly_return_pct": {int(y): float((v / prev[y] - 1) * 100) for y, v in yearly.items()},
+        "curve": [(d.strftime("%Y-%m-%d"), round(float(v), 2)) for d, v in c.items()],
+    }
 
 
 def params_dict(p: ProParams) -> dict:

@@ -145,3 +145,61 @@ def test_breakout_toggle_and_params_from_stats():
     p = P.params_from_stats({"params": {"atr_stop": 2.0, "reward": 1.5, "use_breakout": False, "junk": 1}})
     assert p.atr_stop == 2.0 and p.reward == 1.5 and p.use_breakout is False
     assert P.params_from_stats(None) == P.ProParams()
+
+
+def bars(close, start="2026-11-02"):
+    close = np.asarray(close, float)
+    idx = pd.bdate_range(start, periods=len(close))
+    return pd.DataFrame({"Open": close, "High": close + 1, "Low": close - 1,
+                         "Close": close, "Volume": 1e6}, index=idx)
+
+
+def test_track_trade_waiting_open_target_stop():
+    df = bars([100, 100, 101, 102])
+    sd = df.index[-1]
+    assert P.track_trade(df, sd, 95, 110)["Status"] == "Waiting"
+    r = P.track_trade(df, df.index[0], 95, 110)
+    assert r["Status"] == "Open" and r["Entry price"] == 100 and r["Exit price"] is None
+    up = bars([100, 100, 105, 112])
+    r = P.track_trade(up, up.index[0], 95, 110, P.ProParams(trail_after_r=0))
+    assert r["Status"] == "Target" and r["Exit price"] == 112.0  # gap above target fills at the open
+    dn = bars([100, 100, 97, 93])
+    r = P.track_trade(dn, dn.index[0], 95, 110, P.ProParams(trail_after_r=0))
+    assert r["Status"] == "Stop" and r["Net %"] < 0
+
+
+def test_track_trade_shifts_plan_with_gap():
+    df = bars([100, 104, 104, 104])      # gap up 4 at entry
+    r = P.track_trade(df, df.index[0], 95, 110)
+    assert r["Entry price"] == 104
+    assert r["Target (live)"] == 114     # risk kept the same
+
+
+def test_track_trade_time_exit():
+    df = bars([100] + [100.5] * 30)
+    r = P.track_trade(df, df.index[0], 90, 130, P.ProParams(max_hold=5, trail_after_r=0))
+    assert r["Status"] == "Time"
+
+
+def test_journal_summary():
+    j = pd.DataFrame({"Status": ["Target", "Stop", "Open", "Waiting"], "Net %": [4.0, -2.0, 1.0, 0]})
+    s = P.journal_summary(j)
+    assert s == {"signals": 4, "closed": 2, "open": 2, "win_rate": 50.0,
+                 "avg_net_pct": 1.0, "profit_factor": 2.0}
+    assert P.journal_summary(pd.DataFrame())["signals"] == 0
+
+
+def test_portfolio_limits_and_math():
+    d = pd.bdate_range("2022-01-03", periods=40)
+    rows = []
+    for k in range(8):   # 8 trades all entering the same day: only 5 fit
+        rows.append({"Entry date": d[0], "Exit date": d[10], "Entry": 100.0, "Stop": 95.0,
+                     "Net %": 10.0, "Score": 90 - k, "Outcome": "Target"})
+    rows.append({"Entry date": d[20], "Exit date": d[30], "Entry": 100.0, "Stop": 95.0,
+                 "Net %": -5.3, "Score": 80, "Outcome": "Stop"})
+    pf = P.portfolio(pd.DataFrame(rows), capital=100_000, max_positions=5, risk_pct=1.0)
+    assert pf["trades_taken"] == 6 and pf["trades_skipped_full"] == 3
+    # each position: risk 1% = 1000 -> 200 shares = 20,000 (= equity/5 cap) -> +2,000 each
+    assert pf["end_capital"] > 100_000 + 5 * 2_000 - 1_500
+    assert pf["max_drawdown_pct"] < 0
+    assert P.portfolio(pd.DataFrame())["trades_taken"] == 0

@@ -699,12 +699,32 @@ def page_pro():
             st.caption(f"Research updated {js['generated'][:10]} · {js['stocks_tested']} stocks · "
                        "results on data the strategy was never tuned on. "
                        "Profit factor above 1 = made money; 1.3+ good.")
+        port = js.get("portfolio_oos") or {}
+        if port.get("trades_taken"):
+            with st.expander(f"💰 ₹1 lakh test since 2021: ₹{port['end_capital']:,.0f} "
+                             f"({port['cagr_pct']:.1f}% a year)", expanded=False):
+                k = st.columns(4)
+                k[0].metric("₹1 lakh became", f"₹{port['end_capital']:,.0f}",
+                            f"{port['total_return_pct']:+.1f}%")
+                k[1].metric("Per year", f"{port['cagr_pct']:.1f}%")
+                k[2].metric("NIFTY per year", fmt(js.get("nifty_cagr_oos_pct"), 1, suffix="%"))
+                k[3].metric("Worst fall", f"{port['max_drawdown_pct']:.1f}%")
+                curve = pd.DataFrame(port["curve"], columns=["Date", "Account (₹)"])
+                curve["Date"] = pd.to_datetime(curve["Date"])
+                fig = go.Figure(go.Scatter(x=curve["Date"], y=curve["Account (₹)"],
+                                           line=dict(color="#2563eb", width=2), name="Account"))
+                fig.add_hline(y=port["start_capital"], line=dict(color=NEUTRAL, dash="dot"))
+                fig.update_layout(height=280, margin=dict(l=10, r=10, t=10, b=10))
+                st.plotly_chart(fig, width="stretch")
+                st.caption(f"Max {port['max_positions']} stocks at a time, risking "
+                           f"{port['risk_pct']:g}% of the account per trade, costs included. "
+                           "Only data the strategy was never tuned on.")
     else:
         st.info("Research results not available yet — scores are shown without "
                 "historical confidence until the first research run finishes.")
 
-    tab_one, tab_today, tab_report = st.tabs(["🎯 Check a stock", "📋 Today's pro list",
-                                              "📑 Research report"])
+    tab_one, tab_today, tab_journal, tab_report = st.tabs(
+        ["🎯 Check a stock", "📋 Today's pro list", "📒 Live journal", "📑 Research report"])
     with tab_one:
         symbol = st.text_input("Stock", value=st.session_state.get("symbol", "INFY"),
                                key="pro_symbol").strip().upper()
@@ -773,6 +793,28 @@ def page_pro():
                 st.dataframe(t, hide_index=True, width="stretch")
         else:
             st.info("The daily scan hasn't run yet.")
+
+    with tab_journal:
+        jf = PRO.STATS_FILE.parent / "reports" / "journal.csv"
+        if not jf.exists():
+            st.info("The journal starts with the first daily scan. Every pro signal that "
+                    "passes the filter is recorded on the day it appears and followed "
+                    "until it hits its target, stop-loss or time limit.")
+        else:
+            j = pd.read_csv(jf)
+            sm = PRO.journal_summary(j)
+            k = st.columns(4)
+            k[0].metric("Signals recorded", sm["signals"])
+            k[1].metric("Closed", sm["closed"])
+            k[2].metric("Win rate", fmt(sm.get("win_rate"), 0, suffix="%"))
+            k[3].metric("Avg result", fmt(sm.get("avg_net_pct"), 2, suffix="%"))
+            st.caption("Real signals tracked forward — the honest test. "
+                       "Judge it after 30+ closed trades, not a handful.")
+            cols = [c for c in ["Symbol", "Setup", "Signal date", "Score", "Status",
+                                "Entry price", "Stop (live)", "Target (live)", "Last price",
+                                "Exit date", "Exit price", "Net %"] if c in j.columns]
+            st.dataframe(j[cols].style.format(precision=2, na_rep="—"),
+                         hide_index=True, width="stretch")
 
     with tab_report:
         f = PRO.STATS_FILE.parent / "reports" / "pro_research.md"

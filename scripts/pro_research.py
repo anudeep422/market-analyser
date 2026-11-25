@@ -182,6 +182,8 @@ def research():
     yrs = (n_oos.index[-1] - n_oos.index[0]).days / 365.25
     nifty_cagr = ((n_oos.iloc[-1] / n_oos.iloc[0]) ** (1 / yrs) - 1) * 100 if yrs > 0 else None
 
+    port = P.portfolio(oos_th)
+
     out = {
         "generated": datetime.now(timezone.utc).isoformat(timespec="minutes"),
         "stocks_tested": len(data),
@@ -193,6 +195,7 @@ def research():
         "out_of_sample": {"all": P.stats(oos), "at_threshold": P.stats(oos_th),
                           "by_bucket": P.by_bucket(oos), "yearly": yearly},
         "nifty_cagr_oos_pct": nifty_cagr,
+        "portfolio_oos": port,
     }
     (ROOT / "pro_stats.json").write_text(json.dumps(out, indent=2, default=str))
     REPORTS.mkdir(exist_ok=True)
@@ -223,6 +226,20 @@ def research():
         "",
         "Profit factor = total profit ÷ total loss. Above 1.0 makes money; "
         "1.3+ is good; 1.6+ is strong.",
+        "",
+        "## ₹1 lakh account simulation (out-of-sample)",
+        "",
+        *([f"- ₹{port['start_capital']:,.0f} → **₹{port['end_capital']:,.0f}** "
+           f"({port['total_return_pct']:+.1f}% total, **{port['cagr_pct']:.1f}% a year**)",
+           f"- NIFTY 50 buy-and-hold: {nifty_cagr:.1f}% a year" if nifty_cagr is not None else "",
+           f"- Worst fall from a peak: {port['max_drawdown_pct']:.1f}% (on closed trades)",
+           f"- Rules: max {port['max_positions']} stocks at once, risk {port['risk_pct']:g}% of the "
+           f"account per trade; {port['trades_taken']} trades taken, "
+           f"{port['trades_skipped_full']} skipped because the account was full",
+           "",
+           "| Year | Account return |", "|---|---|",
+           *[f"| {y} | {v:+.1f}% |" for y, v in port["yearly_return_pct"].items()]]
+          if port.get("trades_taken") else ["No trades to simulate."]),
         "",
         "## Out-of-sample by year",
         "",
@@ -277,6 +294,7 @@ def daily():
             "Hist trades": c.get("n"),
         })
     REPORTS.mkdir(exist_ok=True)
+    update_journal(rows, data, params)
     df = pd.DataFrame(rows)
     if not df.empty:
         df = df.sort_values(["Passes filter", "Score"], ascending=[False, False])
@@ -287,6 +305,47 @@ def daily():
     body = df.to_markdown(index=False) if not df.empty else "No pro setups today."
     (REPORTS / "daily_pro.md").write_text("\n".join(head) + body + "\n")
     print("\n".join(head) + body)
+
+
+JOURNAL = REPORTS / "journal.csv"
+
+
+def update_journal(rows: list[dict], data: dict, params) -> None:
+    """Add today's fresh, filter-passing signals and update every open one."""
+    j = pd.read_csv(JOURNAL, parse_dates=["Signal date"]) if JOURNAL.exists() else pd.DataFrame()
+    have = set() if j.empty else set(zip(j["Symbol"], j["Signal date"].dt.date))
+    new = []
+    for r in rows:
+        t = f"{r['Symbol']}.NS"
+        if t not in data or not r["Passes filter"]:
+            continue
+        last_day = data[t].index[-1].date()
+        if r["Signal date"] != last_day or (r["Symbol"], r["Signal date"]) in have:
+            continue   # only record signals on the day they appear
+        new.append({"Symbol": r["Symbol"], "Setup": r["Setup"],
+                    "Signal date": pd.Timestamp(r["Signal date"]), "Score": r["Score"],
+                    "Plan entry": r["Entry"], "Plan stop": r["Stop"],
+                    "Plan target": r["Target 2"], "Status": "Waiting"})
+    if new:
+        j = pd.concat([j, pd.DataFrame(new)], ignore_index=True)
+    if j.empty:
+        return
+    for i, r in j.iterrows():
+        if r["Status"] not in ("Open", "Waiting"):
+            continue
+        df = data.get(f"{r['Symbol']}.NS")
+        if df is None or df.empty:
+            continue
+        res = P.track_trade(df, r["Signal date"], float(r["Plan stop"]),
+                            float(r["Plan target"]), params)
+        for k, v in res.items():
+            j.loc[i, k] = v
+    j = j.sort_values("Signal date", ascending=False)
+    j.to_csv(JOURNAL, index=False)
+    summ = P.journal_summary(j)
+    summ["updated"] = datetime.now(timezone.utc).isoformat(timespec="minutes")
+    (REPORTS / "journal_summary.json").write_text(json.dumps(summ, indent=2))
+    print("Journal:", summ)
 
 
 if __name__ == "__main__":
