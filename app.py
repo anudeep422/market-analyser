@@ -16,6 +16,7 @@ import analysis as A
 import data as D
 import paytm as PM
 import signals as S
+import pro as PRO
 
 st.set_page_config(page_title="Indian Market Analyser", page_icon="📈", layout="wide")
 
@@ -159,7 +160,7 @@ if quick.strip() and quick != st.session_state.get("_last_quick"):
     st.session_state["_last_quick"] = quick
     st.session_state["symbol"] = quick.strip().upper()
     st.session_state["page"] = "Stock analysis"
-page = st.sidebar.radio("Go to", ["Stock analysis", "Buy / Sell signals", "Market overview", "Screener"], key="page")
+page = st.sidebar.radio("Go to", ["Stock analysis", "⭐ Pro signals", "Buy / Sell signals", "Market overview", "Screener"], key="page")
 st.sidebar.toggle("Demo data (offline)", key="demo",
                   help="Use generated sample prices when live data is unavailable.")
 st.sidebar.caption(("Data: Yahoo Finance history + Paytm Money live price. "
@@ -678,10 +679,107 @@ def page_signals():
             st.markdown(f"**{stg.name}** — {stg.description}")
 
 
+# ------------------------------------------------------------------ pro page
+
+def page_pro():
+    st.title("⭐ Pro signals")
+    js = PRO.load_stats()
+    st.caption("Long-only, high-quality setups: trades only with the market trend, only "
+               "stocks beating NIFTY, scored 0–100. Confidence numbers come from a test on "
+               "~110 NSE stocks over ~10 years with costs included.")
+    if js:
+        s = js["out_of_sample"]["at_threshold"]
+        if s.get("n"):
+            c = st.columns(5)
+            c[0].metric("Tested trades (after 2021)", f"{s['n']:,}")
+            c[1].metric("Win rate", f"{s['win_rate']:.0f}%")
+            c[2].metric("Avg profit / trade", f"{s['avg_net_pct']:+.2f}%")
+            c[3].metric("Profit factor", fmt(s.get("profit_factor")))
+            c[4].metric("Min score used", f"{js['threshold']:.0f}")
+            st.caption(f"Research updated {js['generated'][:10]} · {js['stocks_tested']} stocks · "
+                       "results on data the strategy was never tuned on. "
+                       "Profit factor above 1 = made money; 1.3+ good.")
+    else:
+        st.info("Research results not available yet — scores are shown without "
+                "historical confidence until the first research run finishes.")
+
+    tab_one, tab_today, tab_report = st.tabs(["🎯 Check a stock", "📋 Today's pro list",
+                                              "📑 Research report"])
+    with tab_one:
+        symbol = st.text_input("Stock", value=st.session_state.get("symbol", "INFY"),
+                               key="pro_symbol").strip().upper()
+        if symbol:
+            st.session_state["symbol"] = symbol
+            df = get_history(D.to_yahoo(symbol), "5y")
+            nifty = get_history("^NSEI", "5y")
+            if df.empty or len(df) < 260 or nifty.empty:
+                st.error("Not enough data for this stock or for NIFTY right now.")
+            else:
+                ev = PRO.evaluate(df, nifty, stats_json=js)
+                sig = ev["signal"]
+                reg = {1: "🟢 Bull", 0: "🟡 Neutral", -1: "🔴 Bear"}[ev["regime"]]
+                a, b = st.columns(2)
+                a.metric("NIFTY market trend", reg)
+                b.metric("Quality score now", f"{ev['score_now']:.0f} / 100")
+                if sig and sig["passes_threshold"]:
+                    color = UP
+                    title = f"BUY — {sig['setup']}"
+                elif sig:
+                    color = "#f59e0b"
+                    title = f"Weak {sig['setup']} (score below {ev['threshold']:.0f}) — skip"
+                else:
+                    color = NEUTRAL
+                    title = "NO PRO SETUP"
+                st.markdown(f"<div style='border-left:6px solid {color};padding:12px 16px;"
+                            f"background:rgba(100,116,139,.08);border-radius:6px'>"
+                            f"<div style='font-size:28px;font-weight:800;color:{color}'>{title}</div>"
+                            + (f"<div>Signal on {pd.Timestamp(sig['date']):%d %b} · score {sig['score']:.0f}</div>"
+                               if sig else "<div>No setup passed the filters in the last 3 sessions. "
+                               "Waiting is part of the strategy.</div>")
+                            + "</div>", unsafe_allow_html=True)
+                if sig:
+                    st.write("")
+                    m = st.columns(4)
+                    m[0].metric("Entry (around)", fmt(sig["entry"], prefix="₹"))
+                    m[1].metric("Stop-loss", fmt(sig["stop"], prefix="₹"),
+                                f"-{sig['risk_pct']:.1f}%", delta_color="off")
+                    m[2].metric("Target 1 (1R)", fmt(sig["target1"], prefix="₹"))
+                    m[3].metric("Target 2 (2R)", fmt(sig["target2"], prefix="₹"))
+                    conf = sig["confidence"]
+                    if conf:
+                        st.success(f"**Similar setups in the past** ({sig['setup']}, score "
+                                   f"{conf['bucket']}): {conf['n']} trades, won "
+                                   f"{conf['win_rate']:.0f}%, average {conf['avg_net_pct']:+.2f}% "
+                                   f"after costs ({conf['avg_R']:+.2f}R).")
+                    st.caption("Rules: move stop to entry (breakeven) once price is +1R; "
+                               "exit at Target 2 or after 25 trading days.")
+                st.markdown("#### Why this score")
+                for label, pts, mx in ev["breakdown"]:
+                    st.progress(min(pts / mx, 1.0), text=f"{label}: {pts:.0f} / {mx}")
+
+    with tab_today:
+        f = PRO.STATS_FILE.parent / "reports" / "daily_pro.csv"
+        if f.exists():
+            t = pd.read_csv(f)
+            st.caption(f"From the after-close scan · file updated "
+                       f"{pd.Timestamp(f.stat().st_mtime, unit='s'):%d %b %Y}")
+            if t.empty:
+                st.info("No pro setups in the latest scan.")
+            else:
+                st.dataframe(t, hide_index=True, width="stretch")
+        else:
+            st.info("The daily scan hasn't run yet.")
+
+    with tab_report:
+        f = PRO.STATS_FILE.parent / "reports" / "pro_research.md"
+        st.markdown(f.read_text() if f.exists() else "Research report not available yet.")
+
+
 # ------------------------------------------------------------------------ main
 
 {"Market overview": page_overview,
  "Stock analysis": page_stock,
+ "⭐ Pro signals": page_pro,
  "Buy / Sell signals": page_signals,
  "Screener": page_screener}[page]()
 

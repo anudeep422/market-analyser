@@ -7,6 +7,7 @@ A free dashboard for analysing NSE/BSE stocks, built with Python + Streamlit.
 | Page | What it does |
 |---|---|
 | **Buy / Sell signals** | BUY / SELL / NO TRADE call with entry, stop-loss, targets and risk:reward · buy zone & sell zone · position-size calculator · chart markers · 5-year backtest of every strategy on that stock · scanner for fresh signals |
+| **⭐ Pro signals** | Long-only, quality-filtered setups (market trend + relative strength + trend + volume + room), 0–100 score with breakdown, confidence from a ~10-year test on ~110 stocks with costs, today's pro list, research report |
 | **Market overview** | NIFTY 50, Bank Nifty, Sensex, Nifty IT, India VIX · top gainers/losers · advance/decline · signal breakdown |
 | **Stock analysis** (opens first) | Type any NSE/BSE stock — in the sidebar search or on the page |
 | ↳ Full analysis | Written report: verdict, performance (1W–1Y), trend, momentum, levels, fundamentals, overall view, what to watch · downloadable |
@@ -65,6 +66,8 @@ app.py          Streamlit pages and charts
 analysis.py     Pivots, swing levels, SMA/EMA, RSI, MACD, Bollinger, ATR, signal score
 data.py         Yahoo Finance data, stock lists, fundamentals
 paytm.py        Paytm Money login + live quotes (overrides today's bar)
+pro.py          Pro engine: filters, score, cost-aware backtest
+scripts/        pro_research.py — research (10y, ~110 stocks) and daily scan, run by GitHub Actions
 signals.py      Strategy plugins (pullback, breakout, MACD, MA cross, Bollinger), trade plans, backtester
 tests/          Unit tests for analysis.py  (python -m pytest)
 ```
