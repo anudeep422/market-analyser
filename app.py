@@ -242,13 +242,13 @@ def page_stock():
     st.caption(f"{ticker} · last bar {d.index[-1]:%d %b %Y}"
                + (f" · {fund['Sector']} / {fund['Industry']}" if fund.get("Sector") else ""))
 
-    m = st.columns(5)
+    m = st.columns([1, 1.2, 1.2, 0.8, 0.9])
     m[0].metric("Close", fmt(last["Close"], prefix="₹"),
                 f"{(last['Close'] / prev['Close'] - 1) * 100:+.2f}%")
-    m[1].metric("Day range", f"{last['Low']:,.1f} – {last['High']:,.1f}")
+    m[1].metric("Day range", f"{last['Low']:,.0f}–{last['High']:,.0f}")
     year = d.tail(252)
     hi, lo = year["High"].max(), year["Low"].min()
-    m[2].metric("52W range", f"{lo:,.0f} – {hi:,.0f}",
+    m[2].metric("52W range", f"{lo:,.0f}–{hi:,.0f}",
                 f"{(last['Close'] / hi - 1) * 100:.1f}% from high", delta_color="off")
     m[3].metric("RSI (14)", fmt(last["RSI"], 1))
     m[4].metric("ATR (14)", fmt(last["ATR"], 1, prefix="₹"),
@@ -260,7 +260,7 @@ def page_stock():
 
     # --- written report
     with tab_report:
-        rep = A.stock_report(d, fund)
+        rep = A.stock_report(d, fund, name=symbol)
         color = signal_color("Buy" if rep["tech_view"] == "bullish"
                              else "Sell" if rep["tech_view"] == "bearish" else "Neutral")
         st.markdown(f"<div style='border-left:6px solid {color};padding:10px 16px;"

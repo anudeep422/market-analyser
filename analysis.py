@@ -254,7 +254,7 @@ def returns(df: pd.DataFrame) -> dict:
     return out
 
 
-def stock_report(df: pd.DataFrame, fund: dict | None = None) -> dict:
+def stock_report(df: pd.DataFrame, fund: dict | None = None, name: str | None = None) -> dict:
     """Plain-language analysis of one stock.
 
     Returns {"verdict", "score", "headline", "sections": [(title, [lines])],
@@ -286,26 +286,26 @@ def stock_report(df: pd.DataFrame, fund: dict | None = None) -> dict:
     trend = []
     if s200 is not None and s50 is not None:
         if close > s50 > s200:
-            trend_word = "uptrend"
+            trend_word = "an uptrend"
             trend.append("Strong uptrend: price is above the 50-day, and the 50-day is above the 200-day.")
         elif close < s50 < s200:
-            trend_word = "downtrend"
+            trend_word = "a downtrend"
             trend.append("Clear downtrend: price is below the 50-day, and the 50-day is below the 200-day. "
                          "Bounces often get sold until this changes.")
         elif close > s200:
-            trend_word = "mixed, long-term up"
+            trend_word = "a mixed trend (long-term up)"
             trend.append("Long-term trend is up (above the 200-day), but short-term momentum is mixed.")
         else:
-            trend_word = "mixed, long-term down"
+            trend_word = "a mixed trend (long-term down)"
             trend.append("Long-term trend is down (below the 200-day); a short-term recovery is being attempted.")
         trend.append(f"50-day average ₹{s50:,.0f} ({(close / s50 - 1) * 100:+.1f}%), "
                      f"200-day average ₹{s200:,.0f} ({(close / s200 - 1) * 100:+.1f}%).")
     elif s50 is not None:
-        trend_word = "up" if close > s50 else "down"
+        trend_word = "a short-term uptrend" if close > s50 else "a short-term downtrend"
         trend.append(f"Not enough history for a 200-day average; price is "
                      f"{'above' if close > s50 else 'below'} the 50-day (₹{s50:,.0f}).")
     else:
-        trend_word = "unclear"
+        trend_word = "an unclear trend"
         trend.append("Not enough history to judge the trend.")
     sections.append(("Trend", trend))
 
@@ -431,8 +431,8 @@ def stock_report(df: pd.DataFrame, fund: dict | None = None) -> dict:
     if r is not None and r < 30:
         watch.append("RSI moving back above 30 would confirm the oversold bounce.")
 
-    name = fund.get("Name") or "This stock"
-    headline = (f"{name} is in a {trend_word} with a {tech_view} technical score of {score:+d}"
+    name = fund.get("Name") or name or "This stock"
+    headline = (f"{name} is in {trend_word} with a {tech_view} technical score of {score:+d}"
                 + (f" and {fund_view} fundamentals." if fund_view else "."))
     return {"verdict": verdict, "score": score, "tech_view": tech_view,
             "fund_view": fund_view, "headline": headline,
