@@ -85,7 +85,7 @@ def test_breakeven_stop_after_1R():
     d["Hi50"], d["Hi120"], d["ClosePos"], d["VolR"], d["RoomATR"] = 0, 0, 1, 2, 10
     # force a single setup on bar 249
     orig = P.setups
-    P.setups = lambda dd: pd.Series(["" if i != 249 else "Pullback" for i in range(n)], index=dd.index)
+    P.setups = lambda dd, *a: pd.Series(["" if i != 249 else "Pullback" for i in range(n)], index=dd.index)
     try:
         t = P.simulate(d)
     finally:
@@ -135,3 +135,13 @@ def test_evaluate_runs():
     assert ev["signal"] is not None
     s = ev["signal"]
     assert s["stop"] < s["entry"] < s["target1"] < s["target2"]
+
+
+def test_breakout_toggle_and_params_from_stats():
+    stock = trend_frame(start=100, end=260, wiggle=14, seed=3)
+    nifty = trend_frame(start=100, end=130, wiggle=2, seed=4)
+    d = P.features(stock, nifty)
+    assert "Breakout" not in set(P.setups(d, use_breakout=False))
+    p = P.params_from_stats({"params": {"atr_stop": 2.0, "reward": 1.5, "use_breakout": False, "junk": 1}})
+    assert p.atr_stop == 2.0 and p.reward == 1.5 and p.use_breakout is False
+    assert P.params_from_stats(None) == P.ProParams()

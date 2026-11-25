@@ -34,6 +34,7 @@ class ProParams:
     max_hold: int = 25           # time exit (trading days)
     trail_after_r: float = 1.0   # once +1R, move stop to breakeven
     cost_pct: float = 0.30       # round-trip costs + slippage, % of entry
+    use_breakout: bool = True    # include breakout setups
 
 
 # ------------------------------------------------------------ features
@@ -73,7 +74,7 @@ def _cross_up(a: pd.Series, level) -> pd.Series:
     return (a > level) & (a.shift() <= level)
 
 
-def setups(d: pd.DataFrame) -> pd.Series:
+def setups(d: pd.DataFrame, use_breakout: bool = True) -> pd.Series:
     """Name of the setup that fired on each bar ('' if none).
     Hard filters every setup must pass: market not bearish, stock above its
     rising 200-DMA, and outperforming NIFTY over 3 months."""
@@ -91,7 +92,8 @@ def setups(d: pd.DataFrame) -> pd.Series:
 
     out = pd.Series("", index=d.index, dtype=object)
     out[pullback.fillna(False)] = "Pullback"
-    out[breakout.fillna(False) & (out == "")] = "Breakout"
+    if use_breakout:
+        out[breakout.fillna(False) & (out == "")] = "Breakout"
     return out
 
 
@@ -134,7 +136,7 @@ def score_breakdown(row: pd.Series) -> list[tuple[str, float, float]]:
 
 def simulate(d: pd.DataFrame, p: ProParams = ProParams(), symbol: str = "") -> pd.DataFrame:
     """Backtest pro setups on one stock, one position at a time."""
-    st_ = setups(d)
+    st_ = setups(d, p.use_breakout)
     sc = score(d)
     o, h, l, c = (d[k].to_numpy() for k in ("Open", "High", "Low", "Close"))
     atr = d["ATR"].to_numpy()
@@ -263,7 +265,7 @@ def evaluate(df: pd.DataFrame, nifty: pd.DataFrame, p: ProParams = ProParams(),
              recent: int = 3, stats_json: dict | None = None) -> dict:
     """Latest pro setup on one stock, with plan and confidence."""
     d = features(df, nifty)
-    st_ = setups(d)
+    st_ = setups(d, p.use_breakout)
     sc = score(d)
     last = d.iloc[-1]
     fired = st_.iloc[-recent:]
@@ -284,8 +286,9 @@ def evaluate(df: pd.DataFrame, nifty: pd.DataFrame, p: ProParams = ProParams(),
         res["signal"] = {
             "setup": fired.iloc[-1], "date": day, "score": s_sig,
             "passes_threshold": s_sig >= th,
-            "entry": entry, "stop": stop, "target1": entry + risk,
+            "entry": entry, "stop": stop, "target1": entry + min(1.0, p.reward) * risk,
             "target2": entry + p.reward * risk, "risk_pct": risk / entry * 100,
+            "rules": p,
             "confidence": confidence(stats_json, fired.iloc[-1], s_sig),
         }
     return res
@@ -293,3 +296,11 @@ def evaluate(df: pd.DataFrame, nifty: pd.DataFrame, p: ProParams = ProParams(),
 
 def params_dict(p: ProParams) -> dict:
     return asdict(p)
+
+
+def params_from_stats(stats_json: dict | None) -> ProParams:
+    """Use the parameters chosen by the latest research run, if any."""
+    if not stats_json or "params" not in stats_json:
+        return ProParams()
+    known = set(ProParams.__dataclass_fields__)
+    return ProParams(**{k: v for k, v in stats_json["params"].items() if k in known})

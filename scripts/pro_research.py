@@ -123,8 +123,22 @@ def bucket_table(bb: dict) -> str:
     return "\n".join(rows)
 
 
+GRID = [
+    P.ProParams(atr_stop=a, reward=r, trail_after_r=t, use_breakout=b)
+    for b in (True, False)
+    for a in (1.5, 2.0)
+    for r in (1.0, 1.5, 2.0)
+    for t in (0.0, 1.0)
+]
+
+
+def run_all(feats: dict, params) -> pd.DataFrame:
+    parts = [P.simulate(d, params, symbol=t.replace(".NS", "")) for t, d in feats.items()]
+    parts = [x for x in parts if not x.empty]
+    return pd.concat(parts, ignore_index=True).sort_values("Signal date") if parts else pd.DataFrame()
+
+
 def research():
-    params = P.ProParams()
     print("Downloading NIFTY and", len(UNIVERSE), "stocks…")
     nifty = download(["^NSEI"], "15y").get("^NSEI")
     if nifty is None or nifty.empty:
@@ -132,18 +146,26 @@ def research():
     data = download(UNIVERSE, "15y")
     print("Got", len(data), "stocks")
 
-    all_trades = []
-    for t, df in data.items():
-        if len(df) < 300:
-            continue
-        d = P.features(df, nifty)
-        tr = P.simulate(d, params, symbol=t.replace(".NS", ""))
-        if not tr.empty:
-            all_trades.append(tr)
-    trades = pd.concat(all_trades, ignore_index=True) if all_trades else pd.DataFrame()
+    feats = {t: P.features(df, nifty) for t, df in data.items() if len(df) >= 300}
+
+    # 1) choose trade rules on IN-SAMPLE data only (total R, min 150 trades)
+    grid_rows, best, best_total, trades = [], None, -2e9, pd.DataFrame()
+    for gp in GRID:
+        tr = run_all(feats, gp)
+        ins_g = tr[tr["Signal date"] < SPLIT] if not tr.empty else tr
+        s_g = P.stats(ins_g)
+        n_ok = s_g.get("n", 0) >= 150
+        total = s_g.get("avg_R", -9) * s_g.get("n", 0) if n_ok else -1e9 + s_g.get("n", 0)
+        grid_rows.append({**P.params_dict(gp), **{f"in_{k}": v for k, v in s_g.items()},
+                          "in_total_R": total})
+        print(gp, P.stats(ins_g))
+        if total > best_total:
+            best, best_total, trades = gp, total, tr
+    params = best
     if trades.empty:
         raise SystemExit("No trades produced")
-    trades = trades.sort_values("Signal date")
+    REPORTS.mkdir(exist_ok=True)
+    pd.DataFrame(grid_rows).to_csv(REPORTS / "pro_grid.csv", index=False)
     ins = trades[trades["Signal date"] < SPLIT]
     oos = trades[trades["Signal date"] >= SPLIT]
 
@@ -186,6 +208,11 @@ def research():
         f"Tuned on signals **before {SPLIT.date()}**, judged on signals **after** "
         "(the out-of-sample period was never used for choosing anything).",
         "",
+        f"Rules chosen from {len(GRID)} combinations (in-sample only): stop "
+        f"{params.atr_stop}×ATR, target {params.reward}R, breakeven after "
+        f"{params.trail_after_r or 'off'}R, breakouts {'on' if params.use_breakout else 'off'}, "
+        f"max hold {params.max_hold} days. All combinations: reports/pro_grid.csv.",
+        "",
         f"## Result at the chosen minimum score ({th:.0f})",
         "",
         f"- **Out-of-sample (real test):** {fmt_stats(s_o)}",
@@ -225,6 +252,7 @@ def research():
 
 def daily():
     stats_json = P.load_stats()
+    params = P.params_from_stats(stats_json)
     nifty = download(["^NSEI"], "2y").get("^NSEI")
     if nifty is None or nifty.empty:
         raise SystemExit("Could not download NIFTY 50 index")
@@ -233,7 +261,7 @@ def daily():
     for t, df in data.items():
         if len(df) < 260:
             continue
-        ev = P.evaluate(df, nifty, stats_json=stats_json)
+        ev = P.evaluate(df, nifty, params, stats_json=stats_json)
         s = ev["signal"]
         if not s:
             continue

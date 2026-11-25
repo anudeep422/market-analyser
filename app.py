@@ -715,7 +715,8 @@ def page_pro():
             if df.empty or len(df) < 260 or nifty.empty:
                 st.error("Not enough data for this stock or for NIFTY right now.")
             else:
-                ev = PRO.evaluate(df, nifty, stats_json=js)
+                rules = PRO.params_from_stats(js)
+                ev = PRO.evaluate(df, nifty, rules, stats_json=js)
                 sig = ev["signal"]
                 reg = {1: "🟢 Bull", 0: "🟡 Neutral", -1: "🔴 Bear"}[ev["regime"]]
                 a, b = st.columns(2)
@@ -743,16 +744,19 @@ def page_pro():
                     m[0].metric("Entry (around)", fmt(sig["entry"], prefix="₹"))
                     m[1].metric("Stop-loss", fmt(sig["stop"], prefix="₹"),
                                 f"-{sig['risk_pct']:.1f}%", delta_color="off")
-                    m[2].metric("Target 1 (1R)", fmt(sig["target1"], prefix="₹"))
-                    m[3].metric("Target 2 (2R)", fmt(sig["target2"], prefix="₹"))
+                    m[2].metric("Target 1", fmt(sig["target1"], prefix="₹"))
+                    m[3].metric(f"Target 2 ({rules.reward:g}R)", fmt(sig["target2"], prefix="₹"))
                     conf = sig["confidence"]
                     if conf:
                         st.success(f"**Similar setups in the past** ({sig['setup']}, score "
                                    f"{conf['bucket']}): {conf['n']} trades, won "
                                    f"{conf['win_rate']:.0f}%, average {conf['avg_net_pct']:+.2f}% "
                                    f"after costs ({conf['avg_R']:+.2f}R).")
-                    st.caption("Rules: move stop to entry (breakeven) once price is +1R; "
-                               "exit at Target 2 or after 25 trading days.")
+                    be = (f"move stop to entry once price is +{rules.trail_after_r:g}R; "
+                          if rules.trail_after_r else "")
+                    st.caption(f"Rules (chosen by the research): stop {rules.atr_stop:g}×ATR; "
+                               f"{be}exit at Target 2 ({rules.reward:g}R) or after "
+                               f"{rules.max_hold} trading days.")
                 st.markdown("#### Why this score")
                 for label, pts, mx in ev["breakdown"]:
                     st.progress(min(pts / mx, 1.0), text=f"{label}: {pts:.0f} / {mx}")
