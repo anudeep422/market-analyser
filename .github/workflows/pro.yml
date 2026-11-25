@@ -11,7 +11,7 @@ on:
         options: [research, daily]
   push:
     branches: [main]
-    paths: ["pro.py", "scripts/pro_research.py", ".github/workflows/pro.yml"]
+    paths: ["pro.py", "scripts/pro_research.py", ".github/workflows/pro.yml", "run-daily.txt"]
   schedule:
     - cron: "47 10 * * 1-5"   # 16:17 IST Mon-Fri, after market close -> daily scan
     - cron: "23 3 * * 0"      # 08:53 IST Sunday -> full research refresh
@@ -29,6 +29,8 @@ jobs:
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
@@ -38,7 +40,10 @@ jobs:
       - name: Choose mode
         id: mode
         run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+          if [ "${{ github.event_name }}" = "push" ] && git diff --name-only HEAD~1 HEAD | grep -qx "run-daily.txt" \
+             && ! git diff --name-only HEAD~1 HEAD | grep -qE "^(pro.py|scripts/)"; then
+            echo "mode=daily" >> "$GITHUB_OUTPUT"
+          elif [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             echo "mode=${{ inputs.mode }}" >> "$GITHUB_OUTPUT"
           elif [ "${{ github.event_name }}" = "push" ] || [ "${{ github.event.schedule }}" = "23 3 * * 0" ]; then
             echo "mode=research" >> "$GITHUB_OUTPUT"
