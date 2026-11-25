@@ -129,7 +129,12 @@ def price_chart(d: pd.DataFrame, levels: dict | None, show: set[str], bars: int)
 # ----------------------------------------------------------------- sidebar
 
 st.sidebar.title("📈 Market Analyser")
-page = st.sidebar.radio("Go to", ["Market overview", "Stock analysis", "Screener"])
+quick = st.sidebar.text_input("🔍 Analyse a stock", placeholder="e.g. INFY, RELIANCE")
+if quick.strip() and quick != st.session_state.get("_last_quick"):
+    st.session_state["_last_quick"] = quick
+    st.session_state["symbol"] = quick.strip().upper()
+    st.session_state["page"] = "Stock analysis"
+page = st.sidebar.radio("Go to", ["Stock analysis", "Market overview", "Screener"], key="page")
 st.sidebar.toggle("Demo data (offline)", key="demo",
                   help="Use generated sample prices when live data is unavailable.")
 st.sidebar.caption("Data: Yahoo Finance (may be delayed ~15 min). "
@@ -223,8 +228,40 @@ def page_stock():
     m[4].metric("ATR (14)", fmt(last["ATR"], 1, prefix="₹"),
                 f"{last['ATR'] / last['Close'] * 100:.1f}% daily move", delta_color="off")
 
-    tab_levels, tab_chart, tab_tech, tab_fund = st.tabs(
-        ["🎯 Support & resistance", "📊 Chart", "🧭 Technical signal", "🏢 Fundamentals"])
+    tab_report, tab_levels, tab_chart, tab_tech, tab_fund = st.tabs(
+        ["📝 Full analysis", "🎯 Support & resistance", "📊 Chart",
+         "🧭 Technical signal", "🏢 Fundamentals"])
+
+    # --- written report
+    with tab_report:
+        rep = A.stock_report(d, fund)
+        color = signal_color("Buy" if rep["tech_view"] == "bullish"
+                             else "Sell" if rep["tech_view"] == "bearish" else "Neutral")
+        st.markdown(f"<div style='border-left:6px solid {color};padding:10px 16px;"
+                    f"background:rgba(100,116,139,.08);border-radius:6px'>"
+                    f"<div style='font-size:13px;opacity:.7'>VERDICT</div>"
+                    f"<div style='font-size:26px;font-weight:700;color:{color}'>{rep['verdict']}</div>"
+                    f"<div>{rep['headline']}</div></div>", unsafe_allow_html=True)
+        st.write("")
+        perf = A.returns(d)
+        pc = st.columns(len(perf))
+        for col, (k, v) in zip(pc, perf.items()):
+            col.metric(k, fmt(v, 1, suffix="%"))
+        for title, lines in rep["sections"]:
+            st.markdown(f"#### {title}")
+            for line in lines:
+                st.markdown(f"- {line}")
+        st.markdown("#### What to watch")
+        for line in rep["watch"]:
+            st.markdown(f"- {line}")
+        report_md = (f"# {name} ({ticker}) — analysis {d.index[-1]:%d %b %Y}\n\n"
+                     f"**Verdict: {rep['verdict']}** — {rep['headline']}\n\n"
+                     + "\n".join(f"## {t}\n" + "\n".join(f"- {x}" for x in ls) + "\n"
+                                  for t, ls in rep["sections"])
+                     + "\n## What to watch\n" + "\n".join(f"- {x}" for x in rep["watch"])
+                     + "\n\n_For learning only. Not investment advice._\n")
+        st.download_button("Download report", report_md.encode(),
+                           f"{symbol}_analysis.md", "text/markdown")
 
     # --- levels
     with tab_levels:

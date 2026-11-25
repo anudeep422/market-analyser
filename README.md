@@ -7,7 +7,8 @@ A free dashboard for analysing NSE/BSE stocks, built with Python + Streamlit.
 | Page | What it does |
 |---|---|
 | **Market overview** | NIFTY 50, Bank Nifty, Sensex, Nifty IT, India VIX · top gainers/losers · advance/decline · signal breakdown |
-| **Stock analysis** | Any NSE/BSE stock: price, 52-week range, ATR |
+| **Stock analysis** (opens first) | Type any NSE/BSE stock — in the sidebar search or on the page |
+| ↳ Full analysis | Written report: verdict, performance (1W–1Y), trend, momentum, levels, fundamentals, overall view, what to watch · downloadable |
 | ↳ Support & resistance | Pivot levels (classic / Fibonacci / Camarilla) for the next session + swing-based zones |
 | ↳ Chart | Candlesticks with SMA 20/50/200, Bollinger bands, pivot lines, volume, RSI, MACD |
 | ↳ Technical signal | Score from −100 (Strong Sell) to +100 (Strong Buy) with the reasons behind it |

@@ -244,6 +244,201 @@ def snapshot(df: pd.DataFrame) -> dict:
     }
 
 
+def returns(df: pd.DataFrame) -> dict:
+    """Price change over standard periods (trading days)."""
+    c = df["Close"]
+    out = {}
+    for name, n in (("1 week", 5), ("1 month", 21), ("3 months", 63),
+                    ("6 months", 126), ("1 year", 252)):
+        out[name] = (c.iloc[-1] / c.iloc[-n - 1] - 1) * 100 if len(c) > n else None
+    return out
+
+
+def stock_report(df: pd.DataFrame, fund: dict | None = None) -> dict:
+    """Plain-language analysis of one stock.
+
+    Returns {"verdict", "score", "headline", "sections": [(title, [lines])],
+    "watch": [lines]} built only from the numbers, so it is reproducible.
+    """
+    fund = fund or {}
+    d = add_indicators(df) if "RSI" not in df.columns else df
+    last = d.iloc[-1]
+    close = float(last["Close"])
+    sig = technical_signal(d)
+    ret = returns(d)
+    year = d.tail(252)
+    hi, lo = float(year["High"].max()), float(year["Low"].min())
+    piv = pivot_levels(float(last["High"]), float(last["Low"]), close)
+    sw = swing_levels(d)
+    s50, s200 = _num(last.get("SMA50")), _num(last.get("SMA200"))
+    r = _num(last.get("RSI"))
+    sections: list[tuple[str, list[str]]] = []
+
+    # 1. performance
+    perf = [f"{k}: {v:+.1f}%" for k, v in ret.items() if v is not None]
+    pos = (close - lo) / (hi - lo) * 100 if hi > lo else 50
+    perf.append(f"Trading at ₹{close:,.2f}, {abs(close / hi - 1) * 100:.1f}% below the "
+                f"52-week high (₹{hi:,.0f}) and {(close / lo - 1) * 100:+.1f}% from the "
+                f"low (₹{lo:,.0f}) — {pos:.0f}% of the way up its yearly range.")
+    sections.append(("Performance", perf))
+
+    # 2. trend
+    trend = []
+    if s200 is not None and s50 is not None:
+        if close > s50 > s200:
+            trend_word = "uptrend"
+            trend.append("Strong uptrend: price is above the 50-day, and the 50-day is above the 200-day.")
+        elif close < s50 < s200:
+            trend_word = "downtrend"
+            trend.append("Clear downtrend: price is below the 50-day, and the 50-day is below the 200-day. "
+                         "Bounces often get sold until this changes.")
+        elif close > s200:
+            trend_word = "mixed, long-term up"
+            trend.append("Long-term trend is up (above the 200-day), but short-term momentum is mixed.")
+        else:
+            trend_word = "mixed, long-term down"
+            trend.append("Long-term trend is down (below the 200-day); a short-term recovery is being attempted.")
+        trend.append(f"50-day average ₹{s50:,.0f} ({(close / s50 - 1) * 100:+.1f}%), "
+                     f"200-day average ₹{s200:,.0f} ({(close / s200 - 1) * 100:+.1f}%).")
+    elif s50 is not None:
+        trend_word = "up" if close > s50 else "down"
+        trend.append(f"Not enough history for a 200-day average; price is "
+                     f"{'above' if close > s50 else 'below'} the 50-day (₹{s50:,.0f}).")
+    else:
+        trend_word = "unclear"
+        trend.append("Not enough history to judge the trend.")
+    sections.append(("Trend", trend))
+
+    # 3. momentum
+    mom = []
+    if r is not None:
+        if r < 30:
+            mom.append(f"RSI {r:.0f} — oversold. Selling may be overdone; a bounce is possible, "
+                       "but oversold stocks can stay oversold in a downtrend.")
+        elif r > 70:
+            mom.append(f"RSI {r:.0f} — overbought. Strong buying, but a pause or pullback is common from here.")
+        elif r >= 50:
+            mom.append(f"RSI {r:.0f} — neutral with buyers slightly in control.")
+        else:
+            mom.append(f"RSI {r:.0f} — neutral with sellers slightly in control.")
+    m, s = _num(last.get("MACD")), _num(last.get("Signal"))
+    if m is not None and s is not None:
+        mom.append("MACD is above its signal line — momentum improving." if m > s
+                   else "MACD is below its signal line — momentum weakening.")
+    vr = (float(last["Volume"]) / float(last["VolAvg20"])) if _num(last.get("VolAvg20")) else None
+    if vr is not None:
+        if vr > 1.5:
+            mom.append(f"Volume was {vr:.1f}× the 20-day average — the last move had strong participation.")
+        elif vr < 0.6:
+            mom.append(f"Volume was only {vr:.1f}× the 20-day average — the last move lacked conviction.")
+    sections.append(("Momentum", mom))
+
+    # 4. levels
+    lv = [f"Next session pivot ₹{piv['Pivot']:,.1f}. Resistance R1 ₹{piv['R1']:,.1f}, "
+          f"R2 ₹{piv['R2']:,.1f}. Support S1 ₹{piv['S1']:,.1f}, S2 ₹{piv['S2']:,.1f}.",
+          ("Close is above the pivot — slight bullish bias for the day." if close > piv["Pivot"]
+           else "Close is below the pivot — slight bearish bias for the day.")]
+    if sw["support"]:
+        lv.append("Swing support zones: " + ", ".join(f"₹{p:,.0f}" for p, _ in sw["support"][:3]) + ".")
+    if sw["resistance"]:
+        lv.append("Swing resistance zones: " + ", ".join(f"₹{p:,.0f}" for p, _ in sw["resistance"][:3]) + ".")
+    a = _num(last.get("ATR"))
+    if a is not None:
+        lv.append(f"Typical daily move (ATR) is about ₹{a:,.1f} ({a / close * 100:.1f}%) — "
+                  f"a stop-loss tighter than this tends to get hit by normal noise.")
+    sections.append(("Support & resistance", lv))
+
+    # 5. fundamentals
+    fl = []
+    pe, pb, roe = fund.get("P/E (TTM)"), fund.get("P/B"), fund.get("ROE %")
+    de, dy, rg = fund.get("Debt / Equity"), fund.get("Dividend yield %"), fund.get("Revenue growth %")
+    val_score = 0
+    if pe:
+        if pe < 15:
+            fl.append(f"P/E {pe:.1f} — inexpensive. Check whether the market expects slower growth.")
+            val_score += 1
+        elif pe < 30:
+            fl.append(f"P/E {pe:.1f} — reasonably valued.")
+        else:
+            fl.append(f"P/E {pe:.1f} — expensive; the price assumes strong future growth.")
+            val_score -= 1
+    if pb:
+        fl.append(f"P/B {pb:.1f}.")
+    if roe is not None:
+        if roe > 18:
+            fl.append(f"ROE {roe:.1f}% — high-quality, efficient business.")
+            val_score += 1
+        elif roe < 10:
+            fl.append(f"ROE {roe:.1f}% — weak returns on shareholder money.")
+            val_score -= 1
+        else:
+            fl.append(f"ROE {roe:.1f}% — average.")
+    if de is not None:
+        if de < 50:
+            fl.append(f"Debt/equity {de:.0f}% — low debt, strong balance sheet.")
+            val_score += 1
+        elif de > 150:
+            fl.append(f"Debt/equity {de:.0f}% — heavily borrowed; riskier if rates rise or profits fall.")
+            val_score -= 1
+        else:
+            fl.append(f"Debt/equity {de:.0f}% — moderate debt.")
+    if rg is not None:
+        fl.append(f"Revenue growth {rg:+.1f}% year on year" + (" — slow." if rg < 5 else "."))
+        val_score += 1 if rg > 12 else -1 if rg < 0 else 0
+    if dy:
+        fl.append(f"Dividend yield {dy:.2f}%.")
+    if fl:
+        sections.append(("Fundamentals", fl))
+
+    # verdict
+    score = sig["score"]
+    tech_view = ("bullish" if score >= 15 else "bearish" if score <= -15 else "neutral")
+    if fl:
+        fund_view = "strong" if val_score >= 2 else "weak" if val_score <= -1 else "average"
+    else:
+        fund_view = None
+
+    if tech_view == "bullish" and fund_view in ("strong", None):
+        verdict = "Positive"
+        view = ("Price trend and momentum are supportive"
+                + (" and the business looks solid." if fund_view else ".")
+                + " Buying on dips towards support is safer than chasing strength.")
+    elif tech_view == "bearish" and fund_view == "strong":
+        verdict = "Good business, weak chart"
+        view = ("The fundamentals look solid but the price trend is down. Long-term investors may "
+                "accumulate slowly in parts; traders usually wait for the price to reclaim the "
+                "50-day average before buying.")
+    elif tech_view == "bearish":
+        verdict = "Negative"
+        view = ("The trend is down and the numbers give no strong reason to step in yet. "
+                "Wait for the price to stabilise above support and the 50-day average.")
+    elif tech_view == "bullish":
+        verdict = "Positive chart, check fundamentals"
+        view = ("The chart is strong but the fundamentals are not convincing — fine for a short-term "
+                "trade with a stop-loss, riskier as a long-term holding.")
+    else:
+        verdict = "Neutral / wait"
+        view = ("Signals are mixed. Wait for a break above resistance (bullish) or below support "
+                "(bearish) before acting.")
+    sections.append(("Overall view", [view]))
+
+    watch = [f"A daily close above ₹{piv['R1']:,.0f} (R1) would show short-term strength."]
+    if s50 is not None:
+        watch.append(f"Reclaiming the 50-day average (₹{s50:,.0f}) would improve the trend."
+                     if close < s50 else
+                     f"Holding above the 50-day average (₹{s50:,.0f}) keeps the trend intact.")
+    watch.append(f"A close below ₹{piv['S2']:,.0f} (S2) would signal further weakness.")
+    if r is not None and r < 30:
+        watch.append("RSI moving back above 30 would confirm the oversold bounce.")
+
+    name = fund.get("Name") or "This stock"
+    headline = (f"{name} is in a {trend_word} with a {tech_view} technical score of {score:+d}"
+                + (f" and {fund_view} fundamentals." if fund_view else "."))
+    return {"verdict": verdict, "score": score, "tech_view": tech_view,
+            "fund_view": fund_view, "headline": headline,
+            "sections": sections, "watch": watch}
+
+
 def sample_data(days: int = 400, start: float = 1500.0, seed: int = 7) -> pd.DataFrame:
     """Random-walk OHLCV data, used for demo mode and tests."""
     rng = np.random.default_rng(seed)

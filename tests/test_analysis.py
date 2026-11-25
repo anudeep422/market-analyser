@@ -92,3 +92,38 @@ def test_snapshot_keys():
     assert s["S1"] < s["Pivot"] < s["R1"]
     assert s["52W Low"] <= s["Close"] <= s["52W High"]
     assert -100 <= s["Score"] <= 100
+
+
+def test_returns_periods():
+    r = A.returns(A.sample_data())
+    assert set(r) == {"1 week", "1 month", "3 months", "6 months", "1 year"}
+    assert all(v is not None for v in r.values())
+
+
+def test_report_downtrend_good_business():
+    n = 300
+    idx = pd.bdate_range("2025-01-01", periods=n)
+    dn = np.linspace(300, 100, n) + np.sin(np.arange(n)) * 0.5
+    df = pd.DataFrame({"Open": dn, "High": dn + 1, "Low": dn - 1,
+                       "Close": dn, "Volume": 1e6}, index=idx)
+    fund = {"Name": "TestCo", "P/E (TTM)": 14, "ROE %": 30, "Debt / Equity": 10}
+    rep = A.stock_report(df, fund)
+    assert rep["tech_view"] == "bearish"
+    assert rep["fund_view"] == "strong"
+    assert rep["verdict"] == "Good business, weak chart"
+    assert "TestCo" in rep["headline"]
+    titles = [t for t, _ in rep["sections"]]
+    assert titles[0] == "Performance" and titles[-1] == "Overall view"
+    assert "Fundamentals" in titles
+
+
+def test_report_without_fundamentals():
+    rep = A.stock_report(A.sample_data())
+    assert rep["fund_view"] is None
+    assert "Fundamentals" not in [t for t, _ in rep["sections"]]
+    assert rep["watch"]
+
+
+def test_report_short_history():
+    rep = A.stock_report(A.sample_data(days=40))
+    assert rep["verdict"]
