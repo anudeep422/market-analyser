@@ -182,7 +182,8 @@ def research():
     yrs = (n_oos.index[-1] - n_oos.index[0]).days / 365.25
     nifty_cagr = ((n_oos.iloc[-1] / n_oos.iloc[0]) ** (1 / yrs) - 1) * 100 if yrs > 0 else None
 
-    port = P.portfolio(oos_th)
+    # account rules chosen on pre-2021 data only (15 slots beat 5/10/20 there)
+    port = P.portfolio(oos_th, max_positions=15, risk_pct=1.0)
 
     out = {
         "generated": datetime.now(timezone.utc).isoformat(timespec="minutes"),
