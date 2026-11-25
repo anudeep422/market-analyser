@@ -6,17 +6,34 @@ Run locally:  streamlit run app.py
 from __future__ import annotations
 
 import hashlib
+from pathlib import Path
 
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 from plotly.subplots import make_subplots
 
+import importlib
+
 import analysis as A
 import data as D
 import paytm as PM
 import signals as S
 import pro as PRO
+
+# Streamlit Cloud keeps imported modules in memory between code updates.
+# Reload any of our own modules whose file changed since it was loaded, so a
+# new app.py never runs against an old pro.py / signals.py.
+_MODS = (A, S, PRO)
+for _m in _MODS:
+    try:
+        _mt = Path(_m.__file__).stat().st_mtime
+        if getattr(_m, "_loaded_mtime", None) not in (None, _mt):
+            importlib.reload(_m)
+        _m._loaded_mtime = Path(_m.__file__).stat().st_mtime
+    except Exception:
+        pass
+A, S, PRO = (importlib.import_module(m.__name__) for m in _MODS)
 
 st.set_page_config(page_title="Indian Market Analyser", page_icon="📈", layout="wide")
 
