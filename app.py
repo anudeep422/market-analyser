@@ -14,6 +14,7 @@ from plotly.subplots import make_subplots
 
 import analysis as A
 import data as D
+import paytm as PM
 import signals as S
 
 st.set_page_config(page_title="Indian Market Analyser", page_icon="📈", layout="wide")
@@ -32,13 +33,20 @@ def demo_frame(ticker: str, days: int = 500) -> pd.DataFrame:
 def get_history(ticker: str, period: str = "2y") -> pd.DataFrame:
     if st.session_state.get("demo"):
         return demo_frame(ticker)
-    return D.history(ticker, period)
+    df = D.history(ticker, period)
+    if PM.connected():
+        df = PM.apply_quote(df, PM.quotes([ticker]).get(ticker))
+    return df
 
 
 def get_many(tickers: list[str], period: str = "1y") -> dict[str, pd.DataFrame]:
     if st.session_state.get("demo"):
         return {t: demo_frame(t) for t in tickers}
-    return D.history_many(tuple(tickers), period)
+    frames = D.history_many(tuple(tickers), period)
+    if PM.connected():
+        live = PM.quotes(list(tickers))
+        frames = {t: PM.apply_quote(df, live.get(t)) for t, df in frames.items()}
+    return frames
 
 
 def fmt(v, nd=2, prefix="", suffix=""):
@@ -130,6 +138,22 @@ def price_chart(d: pd.DataFrame, levels: dict | None, show: set[str], bars: int)
 # ----------------------------------------------------------------- sidebar
 
 st.sidebar.title("📈 Market Analyser")
+
+# --- Paytm Money live prices
+_login = PM.handle_redirect() if PM.configured() else None
+if _login:
+    (st.sidebar.success if _login[0] else st.sidebar.error)(_login[1])
+if PM.configured():
+    if PM.connected():
+        st.sidebar.markdown("🟢 **Paytm live prices: on**")
+        if st.sidebar.button("Log out of Paytm"):
+            PM.logout()
+            st.rerun()
+    else:
+        st.sidebar.link_button("🔑 Login to Paytm Money (live prices)", PM.login_url(),
+                               help="Needed once a day. Without it, prices come from "
+                                    "Yahoo and can be ~15 min delayed.")
+
 quick = st.sidebar.text_input("🔍 Analyse a stock", placeholder="e.g. INFY, RELIANCE")
 if quick.strip() and quick != st.session_state.get("_last_quick"):
     st.session_state["_last_quick"] = quick
@@ -138,7 +162,8 @@ if quick.strip() and quick != st.session_state.get("_last_quick"):
 page = st.sidebar.radio("Go to", ["Stock analysis", "Buy / Sell signals", "Market overview", "Screener"], key="page")
 st.sidebar.toggle("Demo data (offline)", key="demo",
                   help="Use generated sample prices when live data is unavailable.")
-st.sidebar.caption("Data: Yahoo Finance (may be delayed ~15 min). "
+st.sidebar.caption(("Data: Yahoo Finance history + Paytm Money live price. "
+                    if PM.connected() else "Data: Yahoo Finance (may be delayed ~15 min). ") +
                    "For education only — not investment advice.")
 
 

@@ -37,6 +37,21 @@ It opens at http://localhost:8501.
 
 Every push to `main` updates the live app automatically.
 
+## Live prices with Paytm Money (optional, free)
+
+Yahoo gives the history; Paytm Money gives today's live price.
+
+1. Create an app at developer.paytmmoney.com (Redirect URL = this app's `.streamlit.app` link).
+2. In Streamlit → your app → ⋮ → Settings → **Secrets**, add:
+   ```toml
+   [paytm]
+   api_key = "YOUR_API_KEY"
+   api_secret = "YOUR_API_SECRET"
+   ```
+3. Each trading day, press **Login to Paytm Money** in the sidebar. The sidebar shows 🟢 when live prices are on.
+
+Keep the Streamlit app private — anyone who can open it would use your Paytm login for prices.
+
 ## Symbols
 
 Use NSE codes: `INFY`, `RELIANCE`, `HDFCBANK`, `M&M`, `BAJAJ-AUTO`.
@@ -49,6 +64,7 @@ Stock lists for the screener are in `data.py` (`UNIVERSES`) — edit them when i
 app.py          Streamlit pages and charts
 analysis.py     Pivots, swing levels, SMA/EMA, RSI, MACD, Bollinger, ATR, signal score
 data.py         Yahoo Finance data, stock lists, fundamentals
+paytm.py        Paytm Money login + live quotes (overrides today's bar)
 signals.py      Strategy plugins (pullback, breakout, MACD, MA cross, Bollinger), trade plans, backtester
 tests/          Unit tests for analysis.py  (python -m pytest)
 ```
