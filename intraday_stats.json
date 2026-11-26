@@ -1,0 +1,49 @@
+{
+  "generated": "2026-11-26T02:03+00:00",
+  "stocks": 50,
+  "days": 60,
+  "first_day": "2026-08-27",
+  "split_day": "2026-10-12",
+  "last_day": "2026-11-25",
+  "params": {
+    "reward": 1.5,
+    "breakeven_r": 1.0,
+    "rsi_long": 55.0,
+    "rsi_short": 45.0,
+    "allow_short": false,
+    "min_risk_pct": 0.2,
+    "cost_pct": 0.15,
+    "last_entry": "14:30",
+    "exit_time": "15:10"
+  },
+  "first_half": {
+    "n": 621,
+    "days": 30,
+    "win_rate": 29.629629629629626,
+    "avg_net_pct": -0.19014098270012622,
+    "avg_R": -0.6699163451765975,
+    "profit_factor": 0.28655527394478036,
+    "trades_per_day": 20.7
+  },
+  "second_half": {
+    "n": 793,
+    "days": 30,
+    "win_rate": 37.3266078184111,
+    "avg_net_pct": -0.12595836033883562,
+    "avg_R": -0.4646506820819856,
+    "profit_factor": 0.4884266594953643,
+    "trades_per_day": 26.433333333333334
+  },
+  "second_half_by_side": {
+    "BUY": {
+      "n": 793,
+      "days": 30,
+      "win_rate": 37.3266078184111,
+      "avg_net_pct": -0.12595836033883562,
+      "avg_R": -0.4646506820819856,
+      "profit_factor": 0.4884266594953643,
+      "trades_per_day": 26.433333333333334
+    }
+  },
+  "second_half_green_days_pct": 6.666666666666667
+}
