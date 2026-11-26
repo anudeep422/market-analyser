@@ -8,10 +8,11 @@ on:
         required: true
         default: research
         type: choice
-        options: [research, daily]
+        options: [research, daily, intraday]
   push:
     branches: [main]
-    paths: ["pro.py", "scripts/pro_research.py", ".github/workflows/pro.yml", "run-daily.txt"]
+    paths: ["pro.py", "scripts/pro_research.py", ".github/workflows/pro.yml", "run-daily.txt",
+            "intraday.py", "scripts/intraday_research.py", "run-intraday.txt"]
   schedule:
     - cron: "47 10 * * 1-5"   # 16:17 IST Mon-Fri, after market close -> daily scan
     - cron: "23 3 * * 0"      # 08:53 IST Sunday -> full research refresh
@@ -40,23 +41,33 @@ jobs:
       - name: Choose mode
         id: mode
         run: |
-          if [ "${{ github.event_name }}" = "push" ] && git diff --name-only HEAD~1 HEAD | grep -qx "run-daily.txt" \
-             && ! git diff --name-only HEAD~1 HEAD | grep -qE "^(pro.py|scripts/)"; then
-            echo "mode=daily" >> "$GITHUB_OUTPUT"
-          elif [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            echo "mode=${{ inputs.mode }}" >> "$GITHUB_OUTPUT"
-          elif [ "${{ github.event_name }}" = "push" ] || [ "${{ github.event.schedule }}" = "23 3 * * 0" ]; then
-            echo "mode=research" >> "$GITHUB_OUTPUT"
+          changed="$(git diff --name-only HEAD~1 HEAD 2>/dev/null || true)"
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            mode="${{ inputs.mode }}"
+          elif [ "${{ github.event_name }}" = "push" ]; then
+            if echo "$changed" | grep -qE "^(pro.py|scripts/pro_research.py)$"; then mode=research
+            elif echo "$changed" | grep -qE "^(intraday.py|scripts/intraday_research.py|run-intraday.txt)$"; then mode=intraday
+            elif echo "$changed" | grep -qx "run-daily.txt"; then mode=daily
+            else mode=research; fi
+          elif [ "${{ github.event.schedule }}" = "23 3 * * 0" ]; then
+            mode=research
           else
-            echo "mode=daily" >> "$GITHUB_OUTPUT"
+            mode=daily
           fi
+          echo "mode=$mode" >> "$GITHUB_OUTPUT"
+          echo "Mode: $mode"
       - name: Run
-        run: python scripts/pro_research.py ${{ steps.mode.outputs.mode }}
+        run: |
+          if [ "${{ steps.mode.outputs.mode }}" = "intraday" ]; then
+            python scripts/intraday_research.py
+          else
+            python scripts/pro_research.py ${{ steps.mode.outputs.mode }}
+          fi
       - name: Commit results
         run: |
           git config user.name "market-analyser-bot"
           git config user.email "actions@users.noreply.github.com"
-          git add pro_stats.json reports/ 2>/dev/null || true
+          git add pro_stats.json intraday_stats.json reports/ 2>/dev/null || true
           if git diff --cached --quiet; then
             echo "No changes"
           else
