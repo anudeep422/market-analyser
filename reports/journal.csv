@@ -1,3 +1,3 @@
-Symbol,Setup,Signal date,Score,Plan entry,Plan stop,Plan target,Status
-INDIGO,Breakout,2026-11-25,62.0,5720.0,5419.59,6320.82,Waiting
-TRENT,Breakout,2026-11-25,54.0,3319.6,3145.94,3666.92,Waiting
+Symbol,Setup,Signal date,Score,Plan entry,Plan stop,Plan target,Status,Entry date,Entry price,Stop (live),Target (live),Exit date,Exit price,Last price,Net %,R,Days
+INDIGO,Breakout,2026-11-25,62.0,5720.0,5419.59,6320.82,Open,2026-11-26,5700.0,5399.59,6300.82,,,5625.0,-1.3157894736842146,-0.24965879964049145,1.0
+TRENT,Breakout,2026-11-25,54.0,3319.6,3145.94,3666.92,Open,2026-11-26,3319.60009765625,3145.94,3666.92,,,3262.60009765625,-1.7170742957937635,-0.3282273865400455,1.0
