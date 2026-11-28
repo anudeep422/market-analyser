@@ -75,6 +75,17 @@ def history(ticker: str, period: str = "2y", interval: str = "1d") -> pd.DataFra
     return _clean(df)
 
 
+@st.cache_data(ttl=60, show_spinner=False)
+def history_intraday(ticker: str, period: str = "5d", interval: str = "5m") -> pd.DataFrame:
+    """5-minute bars (IST, last few sessions). Cached for 1 minute.
+    Yahoo's NSE intraday data can lag the live market by a few minutes."""
+    try:
+        df = yf.Ticker(ticker).history(period=period, interval=interval, auto_adjust=False)
+    except Exception:
+        return pd.DataFrame()
+    return _clean(df)
+
+
 @st.cache_data(ttl=300, show_spinner=False)
 def history_many(tickers: tuple[str, ...], period: str = "1y") -> dict[str, pd.DataFrame]:
     """Download many tickers in one request; returns {ticker: DataFrame}."""

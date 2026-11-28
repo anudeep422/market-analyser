@@ -8,6 +8,7 @@ from __future__ import annotations
 import hashlib
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
@@ -20,11 +21,12 @@ import data as D
 import paytm as PM
 import signals as S
 import pro as PRO
+import intraday as I
 
 # Streamlit Cloud keeps imported modules in memory between code updates.
 # Reload any of our own modules whose file changed since it was loaded, so a
 # new app.py never runs against an old pro.py / signals.py.
-_MODS = (A, S, PRO)
+_MODS = (A, S, PRO, I)
 for _m in _MODS:
     try:
         _mt = Path(_m.__file__).stat().st_mtime
@@ -33,7 +35,7 @@ for _m in _MODS:
         _m._loaded_mtime = Path(_m.__file__).stat().st_mtime
     except Exception:
         pass
-A, S, PRO = (importlib.import_module(m.__name__) for m in _MODS)
+A, S, PRO, I = (importlib.import_module(m.__name__) for m in _MODS)
 
 st.set_page_config(page_title="Indian Market Analyser", page_icon="📈", layout="wide")
 
@@ -177,7 +179,7 @@ if quick.strip() and quick != st.session_state.get("_last_quick"):
     st.session_state["_last_quick"] = quick
     st.session_state["symbol"] = quick.strip().upper()
     st.session_state["page"] = "Stock analysis"
-page = st.sidebar.radio("Go to", ["Stock analysis", "⭐ Pro signals", "Buy / Sell signals", "Market overview", "Screener"], key="page")
+page = st.sidebar.radio("Go to", ["Stock analysis", "⭐ Pro signals", "⏱️ Intraday levels", "Buy / Sell signals", "Market overview", "Screener"], key="page")
 st.sidebar.toggle("Demo data (offline)", key="demo",
                   help="Use generated sample prices when live data is unavailable.")
 st.sidebar.caption(("Data: Yahoo Finance history + Paytm Money live price. "
@@ -838,11 +840,181 @@ def page_pro():
         st.markdown(f.read_text() if f.exists() else "Research report not available yet.")
 
 
+# ------------------------------------------------------------- intraday page
+
+def demo_intraday(ticker: str) -> pd.DataFrame:
+    seed = int(hashlib.md5(ticker.encode()).hexdigest()[:6], 16)
+    rng = np.random.default_rng(seed)
+    parts, p = [], 200 + seed % 3000
+    for day in pd.bdate_range(end=pd.Timestamp.today().normalize(), periods=3):
+        idx = pd.date_range(f"{day.date()} 09:15", periods=75, freq="5min")
+        r = rng.normal(rng.normal(0, 0.0005), 0.002, 75)
+        c = p * np.exp(np.cumsum(r))
+        o = np.r_[p, c[:-1]]
+        parts.append(pd.DataFrame({"Open": o, "High": np.maximum(o, c) * 1.0008,
+                                   "Low": np.minimum(o, c) * 0.9992, "Close": c,
+                                   "Volume": rng.integers(10_000, 60_000, 75).astype(float)},
+                                  index=idx))
+        p = c[-1]
+    return pd.concat(parts)
+
+
+def get_intraday(ticker: str) -> pd.DataFrame:
+    if st.session_state.get("demo"):
+        return demo_intraday(ticker)
+    return D.history_intraday(ticker)
+
+
+def intraday_chart(t: pd.DataFrame, levels: dict, show: set[str]) -> go.Figure:
+    fig = make_subplots(rows=3, cols=1, shared_xaxes=True, vertical_spacing=0.03,
+                        row_heights=[0.62, 0.18, 0.20])
+    fig.add_trace(go.Candlestick(x=t.index, open=t["Open"], high=t["High"], low=t["Low"],
+                                 close=t["Close"], name="Price",
+                                 increasing_line_color=UP, decreasing_line_color=DOWN), row=1, col=1)
+    fig.add_trace(go.Scatter(x=t.index, y=t["VWAP"], name="VWAP",
+                             line=dict(color="#f59e0b", width=2)), row=1, col=1)
+    if "EMA 9/20" in show:
+        fig.add_trace(go.Scatter(x=t.index, y=t["EMA9"], name="EMA 9",
+                                 line=dict(color="#2563eb", width=1.2)), row=1, col=1)
+        fig.add_trace(go.Scatter(x=t.index, y=t["EMA20"], name="EMA 20",
+                                 line=dict(color="#7c3aed", width=1.2)), row=1, col=1)
+    styles = {"Opening range high": ("#0f172a", "dash"), "Opening range low": ("#0f172a", "dash"),
+              "Prev day high": (DOWN, "dot"), "Prev day low": (UP, "dot"),
+              "Prev day close": (NEUTRAL, "dot")}
+    for k, v in levels.items():
+        if pd.isna(v):
+            continue
+        if k in styles and "Day levels" in show:
+            color, dash = styles[k]
+        elif k.startswith(("R", "S", "Pivot")) and "Pivots" in show:
+            color = DOWN if k.startswith("R") else UP if k.startswith("S") else "#0f172a"
+            dash = "longdash"
+        else:
+            continue
+        fig.add_hline(y=v, line=dict(color=color, width=1, dash=dash),
+                      annotation_text=f"{k} {v:,.1f}", annotation_position="right",
+                      annotation_font_size=10, row=1, col=1)
+    vc = [UP if c >= o else DOWN for o, c in zip(t["Open"], t["Close"])]
+    fig.add_trace(go.Bar(x=t.index, y=t["Volume"], marker_color=vc, showlegend=False,
+                         name="Volume"), row=2, col=1)
+    fig.add_trace(go.Scatter(x=t.index, y=t["VolAvg"], name="Vol avg",
+                             line=dict(color=NEUTRAL, width=1)), row=2, col=1)
+    fig.add_trace(go.Scatter(x=t.index, y=t["RSI"], name="RSI",
+                             line=dict(color="#0ea5e9", width=1.3)), row=3, col=1)
+    for y, c in ((60, UP), (40, DOWN)):
+        fig.add_hline(y=y, line=dict(color=c, width=1, dash="dot"), row=3, col=1)
+    # keep the y-axis around the day's prices so far-away levels don't squash candles
+    lo, hi = float(t["Low"].min()), float(t["High"].max())
+    pad = (hi - lo) * 0.6 or hi * 0.01
+    fig.update_yaxes(range=[lo - pad, hi + pad], row=1, col=1)
+    fig.update_yaxes(range=[0, 100], row=3, col=1)
+    fig.update_layout(height=760, xaxis_rangeslider_visible=False,
+                      margin=dict(l=10, r=130, t=10, b=10),
+                      legend=dict(orientation="h", y=1.02, x=0))
+    return fig
+
+
+def page_intraday():
+    st.title("⏱️ Intraday levels")
+    st.caption("Analysis only — no buy/sell calls. In a 60-day test the intraday breakout "
+               "signals lost money after costs, so use this to read the day, not as a signal.")
+    c1, c2 = st.columns([2, 1])
+    symbol = c1.text_input("Stock", value=st.session_state.get("symbol", "INFY"),
+                           key="intra_symbol").strip().upper()
+    show = c2.multiselect("Show", ["Day levels", "Pivots", "EMA 9/20"],
+                          default=["Day levels", "Pivots", "EMA 9/20"])
+    if not symbol:
+        return
+    st.session_state["symbol"] = symbol
+    ticker = D.to_yahoo(symbol)
+
+    @st.fragment(run_every="60s")
+    def live():
+        raw = get_intraday(ticker)
+        nraw = get_intraday("^NSEI")
+        if raw.empty or len(raw) < 20:
+            st.error(f"No 5-minute data for **{ticker}** right now. Yahoo may be limiting "
+                     "requests — try again in a minute.")
+            return
+        d = I.add_market(I.features(raw), nraw if not nraw.empty else None)
+        day = d["Day"].iloc[-1]
+        t = d[d["Day"] == day]
+        last = t.iloc[-1]
+        close = float(last["Close"])
+        piv = (A.pivot_levels(float(last["PDH"]), float(last["PDL"]), float(last["PDC"]))
+               if pd.notna(last["PDH"]) else {})
+        levels = {"Opening range high": last["ORH"], "Opening range low": last["ORL"],
+                  "Prev day high": last["PDH"], "Prev day low": last["PDL"],
+                  "Prev day close": last["PDC"], **piv}
+
+        today_ist = pd.Timestamp.now(tz="Asia/Kolkata").normalize().tz_localize(None)
+        session = "today" if day == today_ist else f"last session ({day:%a %d %b})"
+        st.caption(f"{ticker} · 5-minute candles · {session} · last candle "
+                   f"{t.index[-1]:%H:%M} · refreshes every minute")
+
+        chg = (close / last["PDC"] - 1) * 100 if pd.notna(last["PDC"]) else None
+        m = st.columns(5)
+        m[0].metric("Price", fmt(close, prefix="₹"), fmt(chg, 2, suffix="%") if chg is not None else None)
+        m[1].metric("VWAP", fmt(last["VWAP"], prefix="₹"),
+                    f"price {(close / last['VWAP'] - 1) * 100:+.2f}% from VWAP", delta_color="off")
+        m[2].metric("Opening range", f"{last['ORL']:,.1f}–{last['ORH']:,.1f}"
+                    if pd.notna(last["ORH"]) else "—")
+        m[3].metric("RSI (5m)", fmt(last["RSI"], 1))
+        nm = {1: "🟢 above VWAP", -1: "🔴 below VWAP", 0: "—"}[int(np.sign(last.get("Mkt", 0)))]
+        m[4].metric("NIFTY", nm)
+
+        # plain-language picture of the day
+        pic = []
+        pic.append(("Above VWAP — buyers in control today" if close > last["VWAP"]
+                    else "Below VWAP — sellers in control today"))
+        if pd.notna(last["ORH"]):
+            if close > last["ORH"]:
+                pic.append("Trading above the opening range — upside breakout so far")
+            elif close < last["ORL"]:
+                pic.append("Trading below the opening range — downside breakdown so far")
+            else:
+                pic.append("Still inside the opening range — no clear direction yet")
+        pic.append("EMA 9 above EMA 20 — short-term trend up" if last["EMA9"] > last["EMA20"]
+                   else "EMA 9 below EMA 20 — short-term trend down")
+        if pd.notna(last["RSI"]):
+            pic.append(f"RSI {last['RSI']:.0f} — " + ("strong momentum" if last["RSI"] > 60 else
+                       "weak momentum" if last["RSI"] < 40 else "no strong momentum"))
+        if pd.notna(last["VolAvg"]) and last["VolAvg"] > 0:
+            vr = last["Volume"] / last["VolAvg"]
+            pic.append(f"Last candle volume {vr:.1f}× average")
+        if pd.notna(last["PDH"]):
+            if close > last["PDH"]:
+                pic.append("Above yesterday's high — strong day")
+            elif close < last["PDL"]:
+                pic.append("Below yesterday's low — weak day")
+        st.markdown("**Today's picture:** " + " · ".join(pic))
+
+        st.plotly_chart(intraday_chart(t, levels, set(show)), width="stretch")
+
+        st.markdown("#### Levels")
+        rows = [{"Level": k, "Price (₹)": round(float(v), 2),
+                 "Distance": f"{(float(v) / close - 1) * 100:+.2f}%",
+                 "Side": "above" if v > close else "below"}
+                for k, v in levels.items() if pd.notna(v)]
+        lv = pd.DataFrame(rows).sort_values("Price (₹)", ascending=False)
+        st.dataframe(lv, hide_index=True, width="stretch")
+        above = lv[lv["Side"] == "above"].tail(1)
+        below = lv[lv["Side"] == "below"].head(1)
+        if len(above) and len(below):
+            st.info(f"Nearest resistance: **{above.iloc[0]['Level']} ₹{above.iloc[0]['Price (₹)']:,.1f}** · "
+                    f"nearest support: **{below.iloc[0]['Level']} ₹{below.iloc[0]['Price (₹)']:,.1f}**")
+        st.caption("Yahoo's 5-minute NSE data can lag the live market by a few minutes. "
+                   "Check your broker's chart before acting.")
+
+    live()
+
+
 # ------------------------------------------------------------------------ main
 
 {"Market overview": page_overview,
  "Stock analysis": page_stock,
  "⭐ Pro signals": page_pro,
+ "⏱️ Intraday levels": page_intraday,
  "Buy / Sell signals": page_signals,
  "Screener": page_screener}[page]()
 

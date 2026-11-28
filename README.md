@@ -8,6 +8,7 @@ A free dashboard for analysing NSE/BSE stocks, built with Python + Streamlit.
 |---|---|
 | **Buy / Sell signals** | BUY / SELL / NO TRADE call with entry, stop-loss, targets and risk:reward · buy zone & sell zone · position-size calculator · chart markers · 5-year backtest of every strategy on that stock · scanner for fresh signals |
 | **⭐ Pro signals** | Long-only, quality-filtered setups (market trend + relative strength + trend + volume + room), 0–100 score with breakdown, confidence from a ~10-year test on ~110 stocks with costs, today's pro list, research report |
+| **⏱️ Intraday levels** | Live 5-minute chart (refreshes every minute) with VWAP, EMA 9/20, opening range, previous-day high/low/close, pivots, RSI and volume; plain-language picture of the day; levels table. Analysis only — the intraday breakout signals lost money in a 60-day test (reports/intraday_research.md) |
 | **Market overview** | NIFTY 50, Bank Nifty, Sensex, Nifty IT, India VIX · top gainers/losers · advance/decline · signal breakdown |
 | **Stock analysis** (opens first) | Type any NSE/BSE stock — in the sidebar search or on the page |
 | ↳ Full analysis | Written report: verdict, performance (1W–1Y), trend, momentum, levels, fundamentals, overall view, what to watch · downloadable |
