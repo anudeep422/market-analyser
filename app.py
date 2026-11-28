@@ -22,11 +22,13 @@ import paytm as PM
 import signals as S
 import pro as PRO
 import intraday as I
+import riskmgr as RM
+import store as STORE
 
 # Streamlit Cloud keeps imported modules in memory between code updates.
 # Reload any of our own modules whose file changed since it was loaded, so a
 # new app.py never runs against an old pro.py / signals.py.
-_MODS = (A, S, PRO, I)
+_MODS = (A, S, PRO, I, RM)
 for _m in _MODS:
     try:
         _mt = Path(_m.__file__).stat().st_mtime
@@ -35,7 +37,7 @@ for _m in _MODS:
         _m._loaded_mtime = Path(_m.__file__).stat().st_mtime
     except Exception:
         pass
-A, S, PRO, I = (importlib.import_module(m.__name__) for m in _MODS)
+A, S, PRO, I, RM = (importlib.import_module(m.__name__) for m in _MODS)
 
 st.set_page_config(page_title="Indian Market Analyser", page_icon="📈", layout="wide")
 
@@ -179,7 +181,7 @@ if quick.strip() and quick != st.session_state.get("_last_quick"):
     st.session_state["_last_quick"] = quick
     st.session_state["symbol"] = quick.strip().upper()
     st.session_state["page"] = "Stock analysis"
-page = st.sidebar.radio("Go to", ["Stock analysis", "⭐ Pro signals", "⏱️ Intraday levels", "Buy / Sell signals", "Market overview", "Screener"], key="page")
+page = st.sidebar.radio("Go to", ["Stock analysis", "🛡️ Risk Manager", "⭐ Pro signals", "⏱️ Intraday levels", "Buy / Sell signals", "Market overview", "Screener"], key="page")
 st.sidebar.toggle("Demo data (offline)", key="demo",
                   help="Use generated sample prices when live data is unavailable.")
 st.sidebar.caption(("Data: Yahoo Finance history + Paytm Money live price. "
@@ -1009,10 +1011,228 @@ def page_intraday():
     live()
 
 
+# ------------------------------------------------------------- risk manager
+
+def rm_load():
+    if "_rm_journal" not in st.session_state:
+        try:
+            st.session_state["_rm_journal"] = RM.normalize(STORE.load_journal())
+            st.session_state["_rm_rules"] = RM.RiskRules.from_dict(STORE.load_rules())
+            st.session_state["_rm_err"] = None
+        except Exception as e:  # noqa: BLE001
+            st.session_state["_rm_journal"] = RM.empty_journal()
+            st.session_state["_rm_rules"] = RM.RiskRules()
+            st.session_state["_rm_err"] = str(e)
+    return st.session_state["_rm_journal"], st.session_state["_rm_rules"]
+
+
+def rm_save_journal(j, msg):
+    st.session_state["_rm_journal"] = RM.normalize(j)
+    try:
+        STORE.save_journal(j, msg)
+        return True, None
+    except Exception as e:  # noqa: BLE001
+        return False, str(e)
+
+
+def market_facts(symbol: str) -> dict:
+    """Trend, market regime, pro score and results date for the checks."""
+    if st.session_state.get("demo"):
+        df, nifty, dres = demo_frame(D.to_yahoo(symbol)), demo_frame("^NSEI"), None
+    else:
+        df, nifty = get_history(D.to_yahoo(symbol), "2y"), get_history("^NSEI", "2y")
+        dres = D.days_to_results(D.to_yahoo(symbol))
+    out = {"days_to_results": dres}
+    if not df.empty and len(df) > 210:
+        d = A.add_indicators(df)
+        last = d.iloc[-1]
+        out.update(close=float(last["Close"]), sma50=float(last["SMA50"]),
+                   sma200=float(last["SMA200"]), atr=float(last["ATR"]))
+        if not nifty.empty and len(nifty) > 210:
+            out["nifty_regime"] = int(PRO.regime(nifty).iloc[-1])
+            try:
+                out["pro_score"] = float(PRO.score(PRO.features(df, nifty)).iloc[-1])
+            except Exception:
+                pass
+    return out
+
+
+def page_risk():
+    st.title("🛡️ Risk Manager")
+    j, rules = rm_load()
+    if STORE.configured():
+        st.caption("Journal and rules are saved to your GitHub repo ('data' branch).")
+    else:
+        st.warning("Not saving yet — add a GitHub token in Streamlit Secrets (see README). "
+                   "Until then trades are kept only while this page is open.", icon="💾")
+    if st.session_state.get("_rm_err"):
+        st.error(f"Couldn't load saved data: {st.session_state['_rm_err']}")
+
+    ds, ms = RM.day_stats(j), RM.month_stats(j, rules)
+    k = st.columns(4)
+    k[0].metric("Trades today", f"{ds['trades_today']} / {rules.max_trades_day}")
+    k[1].metric("Losses today", f"{ds['losses_today']} / {rules.max_losses_day}")
+    k[2].metric("This month", f"₹{ms['pnl_month']:,.0f}", f"{ms['pnl_month_pct']:+.1f}%")
+    k[3].metric("Open positions", f"{ds['open_positions']} / {rules.max_open}")
+    if ds["losses_today"] >= rules.max_losses_day:
+        st.error("🛑 Daily loss limit reached — no more trades today. Come back tomorrow.")
+    elif ds["trades_today"] >= rules.max_trades_day:
+        st.error("🛑 Daily trade limit reached — no more trades today.")
+    if ms["pnl_month_pct"] <= -rules.monthly_loss_pct:
+        st.error(f"⏸️ Down {abs(ms['pnl_month_pct']):.1f}% this month — trading paused until "
+                 "next month. Review your journal.")
+
+    t_check, t_journal, t_results, t_rules = st.tabs(
+        ["✅ Check a trade", "📒 My journal", "📊 Results", "⚙️ My rules"])
+
+    with t_check:
+        a, b = st.columns([2, 1])
+        symbol = a.text_input("Stock", value=st.session_state.get("symbol", "INFY"),
+                              key="rm_symbol").strip().upper()
+        side = b.radio("Side", ["BUY", "SELL"], horizontal=True, key="rm_side")
+        facts = market_facts(symbol) if symbol else {}
+        px, atr = facts.get("close"), facts.get("atr")
+        if px:
+            sgn = 1 if side == "BUY" else -1
+            sug_stop = round(px - sgn * 1.5 * atr, 2) if atr else round(px * (1 - sgn * 0.03), 2)
+            sug_tgt = round(px + sgn * 2 * abs(px - sug_stop), 2)
+        else:
+            sug_stop = sug_tgt = 0.0
+        with st.form("rm_check"):
+            c = st.columns(4)
+            entry = c[0].number_input("Entry ₹", 0.0, value=float(px or 0.0), step=0.05, format="%.2f")
+            stop = c[1].number_input("Stop-loss ₹", 0.0, value=float(sug_stop), step=0.05, format="%.2f",
+                                     help="Suggested: 1.5 × the stock's normal daily move")
+            target = c[2].number_input("Target ₹", 0.0, value=float(sug_tgt), step=0.05, format="%.2f")
+            qty = c[3].number_input("Shares (0 = suggest)", 0, 1_000_000, 0, 1)
+            go_ = st.form_submit_button("Check this trade", type="primary")
+        if go_ and symbol and entry > 0:
+            res = RM.check_trade(rules, j, side, entry, stop or None, target or None,
+                                 int(qty) or None, facts)
+            st.session_state["_rm_last"] = {"res": res, "symbol": symbol, "side": side,
+                                            "entry": entry, "stop": stop, "target": target,
+                                            "qty": int(qty) or res["size"]["qty"]}
+        last = st.session_state.get("_rm_last")
+        if last and last["symbol"] == symbol:
+            res = last["res"]
+            color = {"ALLOWED": UP, "CAUTION": "#f59e0b", "BLOCKED": DOWN}[res["verdict"]]
+            icon = {"ALLOWED": "✅", "CAUTION": "⚠️", "BLOCKED": "🛑"}[res["verdict"]]
+            st.markdown(f"<div style='border-left:6px solid {color};padding:10px 16px;"
+                        f"background:rgba(100,116,139,.08);border-radius:6px'>"
+                        f"<div style='font-size:28px;font-weight:800;color:{color}'>{icon} "
+                        f"{res['verdict']}</div><div>{last['side']} {last['symbol']} · "
+                        f"{last['qty']} shares · max loss ₹{last['qty'] * abs(last['entry'] - last['stop']):,.0f}"
+                        f"</div></div>", unsafe_allow_html=True)
+            for ch in res["checks"]:
+                mark = "✅" if ch["ok"] else ("❔" if ch["ok"] is None else ("🛑" if ch["hard"] else "⚠️"))
+                st.markdown(f"{mark} **{ch['rule']}** — {ch['detail']}")
+            if res["verdict"] == "BLOCKED":
+                st.error("This trade breaks your rules, so it can't be logged. "
+                         "Fix the red items or skip it.")
+            else:
+                m1, m2 = st.columns([1, 2])
+                mode = m1.radio("Type", ["Paper", "Real"], horizontal=True, key="rm_mode")
+                notes = m2.text_input("Why this trade? (setup / reason)", key="rm_notes")
+                if st.button(f"📝 Log {last['side']} {last['symbol']} in journal"):
+                    nj = RM.add_trade(j, last["symbol"], last["side"], last["qty"], last["entry"],
+                                      last["stop"], last["target"] or None, mode, notes)
+                    ok, err = rm_save_journal(nj, f"Open {last['side']} {last['symbol']}")
+                    st.session_state.pop("_rm_last", None)
+                    (st.success if ok else st.warning)(
+                        "Logged and saved." if ok else f"Logged for this session, but saving failed: {err}")
+                    st.rerun()
+
+    with t_journal:
+        jj = st.session_state["_rm_journal"]
+        open_t = jj[jj["Status"] == "Open"]
+        st.markdown(f"**Open trades ({len(open_t)})**")
+        if open_t.empty:
+            st.caption("No open trades.")
+        else:
+            st.dataframe(open_t[["id", "Opened", "Symbol", "Side", "Qty", "Entry", "Stop", "Target",
+                                 "Mode", "Notes"]], hide_index=True, width="stretch")
+            with st.form("rm_close"):
+                c = st.columns([2, 1, 1])
+                labels = {f"#{int(r.id)} {r.Side} {r.Symbol} @ {r.Entry:,.2f}": int(r.id)
+                          for r in open_t.itertuples()}
+                pick = c[0].selectbox("Close trade", list(labels))
+                exit_px = c[1].number_input("Exit ₹", 0.0, step=0.05, format="%.2f")
+                cost = c[2].number_input("Costs %", 0.0, 1.0, 0.1, 0.05,
+                                         help="Brokerage + taxes, round trip")
+                if st.form_submit_button("Close trade") and exit_px > 0:
+                    nj = RM.close_trade(jj, labels[pick], exit_px, cost)
+                    ok, err = rm_save_journal(nj, f"Close {pick}")
+                    if not ok:
+                        st.warning(f"Closed for this session, but saving failed: {err}")
+                    st.rerun()
+        closed = jj[jj["Status"] == "Closed"].sort_values("Closed", ascending=False)
+        st.markdown(f"**Closed trades ({len(closed)})**")
+        if not closed.empty:
+            st.dataframe(closed[["id", "Opened", "Closed", "Symbol", "Side", "Qty", "Entry", "Exit",
+                                 "PnL", "PnL %", "Mode", "Notes"]].style.format(precision=2, na_rep="—")
+                         .map(lambda v: f"color:{UP if v > 0 else DOWN}" if isinstance(v, (int, float))
+                              and not pd.isna(v) else "", subset=["PnL", "PnL %"]),
+                         hide_index=True, width="stretch")
+            st.download_button("Download journal (CSV)", jj.to_csv(index=False).encode(),
+                               "my_trades.csv", "text/csv")
+
+    with t_results:
+        jj = st.session_state["_rm_journal"]
+        o = RM.overall(jj)
+        if not o.get("closed"):
+            st.info("Results appear after you close your first trade.")
+        else:
+            k = st.columns(5)
+            k[0].metric("Closed trades", o["closed"])
+            k[1].metric("Win rate", f"{o['win_rate']:.0f}%")
+            k[2].metric("Total P&L", f"₹{o['total_pnl']:,.0f}")
+            k[3].metric("Avg win / loss", f"₹{o['avg_win'] or 0:,.0f} / ₹{o['avg_loss'] or 0:,.0f}")
+            k[4].metric("Profit factor", fmt(o["profit_factor"]))
+            if o["avg_win"] and o["avg_loss"] and o["avg_win"] < abs(o["avg_loss"]):
+                st.warning("Your average loss is bigger than your average win — "
+                           "keep stops tight and let winners reach the target.")
+            mode = st.radio("Show", ["All", "Paper", "Real"], horizontal=True, key="rm_res_mode")
+            sub = jj if mode == "All" else jj[jj["Mode"] == mode]
+            a, b = st.columns(2)
+            a.markdown("**By week**")
+            a.dataframe(RM.summary(sub, "W"), hide_index=True, width="stretch")
+            b.markdown("**By month**")
+            b.dataframe(RM.summary(sub, "M"), hide_index=True, width="stretch")
+
+    with t_rules:
+        with st.form("rm_rules"):
+            c = st.columns(3)
+            cap = c[0].number_input("Trading capital ₹", 1000.0, 1e9, float(rules.capital), 1000.0)
+            rp = c[1].number_input("Max loss per trade %", 0.1, 5.0, float(rules.risk_pct), 0.1)
+            mrr = c[2].number_input("Min reward : risk", 0.5, 5.0, float(rules.min_reward_risk), 0.5)
+            c = st.columns(3)
+            mtd = c[0].number_input("Max trades a day", 1, 20, int(rules.max_trades_day))
+            mld = c[1].number_input("Stop after losses a day", 1, 10, int(rules.max_losses_day))
+            mlp = c[2].number_input("Pause if month down %", 1.0, 50.0, float(rules.monthly_loss_pct), 0.5)
+            c = st.columns(3)
+            mo = c[0].number_input("Max open positions", 1, 50, int(rules.max_open))
+            rd = c[1].number_input("Avoid results within days", 0, 30, int(rules.results_days))
+            tr = c[2].checkbox("Buys only in uptrends", rules.require_trend)
+            mk = c[2].checkbox("Buys only when NIFTY isn't falling", rules.require_market)
+            if st.form_submit_button("Save rules"):
+                nr = RM.RiskRules(capital=cap, risk_pct=rp, max_trades_day=int(mtd),
+                                  max_losses_day=int(mld), monthly_loss_pct=mlp, max_open=int(mo),
+                                  min_reward_risk=mrr, results_days=int(rd),
+                                  require_trend=tr, require_market=mk)
+                st.session_state["_rm_rules"] = nr
+                try:
+                    STORE.save_rules(nr.to_dict())
+                    st.success("Rules saved.")
+                except Exception as e:  # noqa: BLE001
+                    st.warning(f"Rules applied for this session, but saving failed: {e}")
+        st.caption("Tip: change rules only on weekends, never in the middle of a losing day.")
+
+
 # ------------------------------------------------------------------------ main
 
 {"Market overview": page_overview,
  "Stock analysis": page_stock,
+ "🛡️ Risk Manager": page_risk,
  "⭐ Pro signals": page_pro,
  "⏱️ Intraday levels": page_intraday,
  "Buy / Sell signals": page_signals,

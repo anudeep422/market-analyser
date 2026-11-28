@@ -110,6 +110,33 @@ def history_many(tickers: tuple[str, ...], period: str = "1y") -> dict[str, pd.D
     return out
 
 
+@st.cache_data(ttl=12 * 3600, show_spinner=False)
+def days_to_results(ticker: str) -> int | None:
+    """Days until the next quarterly results (negative = just passed), if known."""
+    try:
+        cal = yf.Ticker(ticker).calendar
+    except Exception:
+        return None
+    dates = []
+    if isinstance(cal, dict):
+        dates = cal.get("Earnings Date") or []
+    elif isinstance(cal, pd.DataFrame) and "Earnings Date" in cal.index:
+        dates = list(cal.loc["Earnings Date"].values)
+    if not isinstance(dates, (list, tuple)):
+        dates = [dates]
+    today = pd.Timestamp.now(tz="Asia/Kolkata").normalize().tz_localize(None)
+    days = []
+    for d in dates:
+        try:
+            days.append((pd.Timestamp(d).tz_localize(None).normalize() - today).days)
+        except Exception:
+            continue
+    if not days:
+        return None
+    future = [x for x in days if x >= -1]
+    return min(future) if future else max(days)
+
+
 @st.cache_data(ttl=3600, show_spinner=False)
 def fundamentals(ticker: str) -> dict:
     """Key fundamentals. Yahoo's coverage of Indian stocks has gaps,

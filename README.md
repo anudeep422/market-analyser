@@ -7,6 +7,7 @@ A free dashboard for analysing NSE/BSE stocks, built with Python + Streamlit.
 | Page | What it does |
 |---|---|
 | **Buy / Sell signals** | BUY / SELL / NO TRADE call with entry, stop-loss, targets and risk:reward · buy zone & sell zone · position-size calculator · chart markers · 5-year backtest of every strategy on that stock · scanner for fresh signals |
+| **🛡️ Risk Manager** | Checks every trade against your rules before you take it — stop-loss, max 1% loss with exact share count, reward:risk, trend, NIFTY, setup score, results date, daily trade/loss limits, monthly loss pause, open positions — and gives ALLOWED / CAUTION / BLOCKED. Trade journal (paper/real) with weekly and monthly results, saved to the repo's `data` branch |
 | **⭐ Pro signals** | Long-only, quality-filtered setups (market trend + relative strength + trend + volume + room), 0–100 score with breakdown, confidence from a ~10-year test on ~110 stocks with costs, today's pro list, research report |
 | **⏱️ Intraday levels** | Live 5-minute chart (refreshes every minute) with VWAP, EMA 9/20, opening range, previous-day high/low/close, pivots, RSI and volume; plain-language picture of the day; levels table. Analysis only — the intraday breakout signals lost money in a 60-day test (reports/intraday_research.md) |
 | **Market overview** | NIFTY 50, Bank Nifty, Sensex, Nifty IT, India VIX · top gainers/losers · advance/decline · signal breakdown |
@@ -53,6 +54,17 @@ Yahoo gives the history; Paytm Money gives today's live price.
 3. Each trading day, press **Login to Paytm Money** in the sidebar. The sidebar shows 🟢 when live prices are on.
 
 Keep the Streamlit app private — anyone who can open it would use your Paytm login for prices.
+
+## Saving your trade journal (Risk Manager)
+
+1. GitHub → Settings → Developer settings → Personal access tokens → **Fine-grained tokens** → Generate new token.
+2. Repository access: **Only select repositories** → `market-analyser`. Permissions → Repository → **Contents: Read and write**. Generate and copy it.
+3. Streamlit → your app → ⋮ → Settings → **Secrets**, add below the Paytm section:
+   ```toml
+   [github]
+   token = "github_pat_..."
+   ```
+Trades and rules are saved on a separate `data` branch, so saving never restarts the app.
 
 ## Symbols
 
